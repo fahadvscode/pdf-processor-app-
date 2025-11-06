@@ -56,6 +56,14 @@ class DriveManager:
         """Get Google Drive credentials (supports both local and Streamlit Cloud)"""
         creds = None
         
+        # Detect if running on Streamlit Cloud
+        import os
+        is_streamlit_cloud = (
+            os.getenv('STREAMLIT_SHARING_MODE') or 
+            os.getenv('STREAMLIT_SERVER_PORT') or
+            not Path(__file__).parent.parent.joinpath("webhook_system").exists()
+        )
+        
         # Check if running on Streamlit Cloud with secrets
         if HAS_STREAMLIT and hasattr(st, 'secrets'):
             try:
@@ -81,19 +89,25 @@ class DriveManager:
                     
                     creds = Credentials.from_authorized_user_info(token_info, SCOPES)
                     
-                    # Refresh if expired
+                    # Refresh if expired (note: can't refresh if refresh_token is null)
                     if creds and creds.expired and creds.refresh_token:
-                        creds.refresh(Request())
+                        try:
+                            creds.refresh(Request())
+                        except Exception as refresh_error:
+                            # If refresh fails, return the creds anyway and hope they work
+                            print(f"Token refresh failed: {refresh_error}")
                     
                     return creds
                 else:
-                    raise Exception("Token not found in Streamlit secrets")
+                    if is_streamlit_cloud:
+                        raise Exception(
+                            "Token not found in Streamlit secrets. "
+                            "Please add your Google Drive credentials to Streamlit Cloud secrets."
+                        )
                     
             except Exception as e:
                 # If on Streamlit Cloud, don't fall back to local files
-                import os
-                # Check if we're on Streamlit Cloud (not local)
-                if os.getenv('STREAMLIT_SHARING_MODE') or os.getenv('STREAMLIT_SERVER_PORT'):
+                if is_streamlit_cloud:
                     raise Exception(
                         f"Failed to load credentials from Streamlit secrets: {e}\n"
                         f"Secrets keys available: {list(st.secrets.keys()) if hasattr(st, 'secrets') else 'None'}\n"
@@ -103,6 +117,12 @@ class DriveManager:
                 print(f"Streamlit secrets failed: {e}. Trying local credentials...")
         
         # Local development: Use token.pickle
+        if is_streamlit_cloud:
+            raise Exception(
+                "Running on Streamlit Cloud but no secrets configured. "
+                "Please add your Google Drive credentials to Streamlit Cloud secrets."
+            )
+        
         token_path = Path(__file__).parent.parent / "webhook_system" / "token.pickle"
         credentials_path = Path(__file__).parent.parent / "webhook_system" / "credentials.json"
         
