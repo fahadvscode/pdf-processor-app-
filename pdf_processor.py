@@ -10,20 +10,24 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Callable, Optional
 
-# Add parent directory to access webhook_system modules
+# Add current directory and parent webhook_system to path
+sys.path.insert(0, str(Path(__file__).parent))  # Current streamlit_app directory
 parent_dir = Path(__file__).parent.parent / "webhook_system"
-sys.path.insert(0, str(parent_dir))
+if parent_dir.exists():
+    sys.path.insert(0, str(parent_dir))
 
 # Import existing PDF processing function
 try:
     from ai_enhanced_redactor import process_pdf_enhanced
-except ImportError:
+    print("✅ AI redaction module loaded successfully")
+except ImportError as e:
+    print(f"⚠️  Warning: Could not import ai_enhanced_redactor: {e}")
     # Fallback if module structure is different
     def process_pdf_enhanced(input_path, output_path, project_folder_path):
-        """Fallback PDF processor"""
+        """Fallback PDF processor - just copies file"""
         import shutil
         shutil.copy(input_path, output_path)
-        print(f"Warning: Using fallback processor (copied file without processing)")
+        print(f"⚠️  Warning: Using fallback processor (copied file without processing)")
 
 
 def process_and_upload_pdf(
