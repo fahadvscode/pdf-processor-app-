@@ -71,7 +71,7 @@ FAHAD_WATERMARK_TEXT = 'Fahad Javed'
 FAHAD_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/fahad%20javed%20footer.png'
 
 # Common watermark settings
-WATERMARK_OPACITY = 0.70  # Increased from 0.40 for better visibility
+WATERMARK_OPACITY = 0.30  # Light and subtle like a typical watermark
 WATERMARK_ANGLE_DEGREES = 35
 
 # Temporary processing folder
@@ -1145,7 +1145,7 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
     img = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     base = min(canvas_w, canvas_h)
-    font_size = max(48, int(base * 0.25))  # Increased from 0.12 to 0.25 for larger watermark
+    font_size = max(36, int(base * 0.15))  # Moderate size - not too large, not too small
     
     # Try multiple font paths for better compatibility across systems
     font_paths = [
@@ -1175,9 +1175,9 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
     text_w = text_bbox[2] - text_bbox[0]
     text_h = text_bbox[3] - text_bbox[1]
     
-    # If using default font, scale up the dimensions significantly
+    # If using default font, scale up the dimensions moderately
     if using_default_font:
-        scale_factor = 15  # Make it 15x larger to compensate for tiny default font
+        scale_factor = 8  # Moderate scaling - 50% smaller than before (was 15x)
         text_w = text_w * scale_factor
         text_h = text_h * scale_factor
     
