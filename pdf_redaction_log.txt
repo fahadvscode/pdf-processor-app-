@@ -1,0 +1,59 @@
+2025-11-05 19:43:00,649 - INFO - "GET /?state=1UXwHupMoZg7qcJtQqleBbgqTDy4Ey&code=4%2F0Ab32j9164YleA3aMMY_tlX_zGwCr_EaQWYhP-zVQkcTSVd76YzW9621xEbGrVX4bUjHbWw&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive HTTP/1.1" 200 65
+2025-11-05 19:43:00,868 - INFO - file_cache is only supported with oauth2client<4.0.0
+2025-11-05 19:43:56,299 - INFO - file_cache is only supported with oauth2client<4.0.0
+2025-11-05 19:45:03,574 - INFO - file_cache is only supported with oauth2client<4.0.0
+2025-11-05 19:45:48,565 - INFO - Starting AI-enhanced processing of /var/folders/fn/rvxfl9_94b9f3x_lg_mx5b0h0000gn/T/tmp72yzotbb/stonerose-floorplans.pdf
+2025-11-05 19:45:48,566 - INFO - Using Precon Factory branding for project folder
+2025-11-05 19:45:49,218 - WARNING - Logos folder not found: ./logos/
+2025-11-05 19:45:49,219 - INFO - ✨ PDF PROCESSING MODE: Adding watermark and footer only (NO content removal)
+2025-11-05 19:45:49,219 - INFO - Processing page 1 with AI-enhanced redaction...
+2025-11-05 19:45:49,477 - INFO - ⏸️  YOLO logo detection paused for page 1
+2025-11-05 19:45:49,477 - INFO - ⏸️  AI vision analysis paused for page 1
+2025-11-05 19:45:49,477 - INFO - ⏸️  Template matching logo detection paused for page 1
+2025-11-05 19:45:49,556 - INFO - Processing page 2 with AI-enhanced redaction...
+2025-11-05 19:45:49,785 - INFO - ⏸️  YOLO logo detection paused for page 2
+2025-11-05 19:45:49,785 - INFO - ⏸️  AI vision analysis paused for page 2
+2025-11-05 19:45:49,785 - INFO - ⏸️  Template matching logo detection paused for page 2
+2025-11-05 19:45:49,820 - INFO - Processing page 3 with AI-enhanced redaction...
+2025-11-05 19:45:50,029 - INFO - ⏸️  YOLO logo detection paused for page 3
+2025-11-05 19:45:50,029 - INFO - ⏸️  AI vision analysis paused for page 3
+2025-11-05 19:45:50,029 - INFO - ⏸️  Template matching logo detection paused for page 3
+2025-11-05 19:45:50,069 - INFO - Successfully processed /var/folders/fn/rvxfl9_94b9f3x_lg_mx5b0h0000gn/T/tmp72yzotbb/stonerose-floorplans.pdf in 1.50 seconds
+2025-11-05 19:45:50,069 - INFO - Total redactions applied: 0
+2025-11-05 19:45:50,069 - INFO - No redactions were necessary in this document
+2025-11-05 19:47:39,057 - INFO - file_cache is only supported with oauth2client<4.0.0
+2025-11-05 19:49:40,665 - INFO - file_cache is only supported with oauth2client<4.0.0
+2025-11-05 20:52:13,046 - INFO - "GET /?state=CqEA9WoM9HFWm1BYyu644RA2OFQ7p9&code=4%2F0Ab32j900R8zCn_eXCmqi8bEdvfdG5_P9CjXbMd5Yknl3HkiBIb9CGxdR99jbJTLA3GLfzg&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive HTTP/1.1" 200 65
+2025-11-05 20:52:13,303 - INFO - file_cache is only supported with oauth2client<4.0.0
+2025-11-05 20:52:45,311 - INFO - Starting AI-enhanced processing of /var/folders/fn/rvxfl9_94b9f3x_lg_mx5b0h0000gn/T/tmphi8eytog/stonerose-floorplans.pdf
+2025-11-05 20:52:45,312 - INFO - Using Fahad Javed branding for project folder
+2025-11-05 20:52:46,433 - WARNING - Logos folder not found: ./logos/
+2025-11-05 20:52:46,433 - INFO - ✨ PDF PROCESSING MODE: Adding watermark and footer only (NO content removal)
+2025-11-05 20:52:46,435 - INFO - Processing page 1 with AI-enhanced redaction...
+2025-11-05 20:52:46,691 - INFO - ⏸️  YOLO logo detection paused for page 1
+2025-11-05 20:52:46,691 - INFO - ⏸️  AI vision analysis paused for page 1
+2025-11-05 20:52:46,691 - INFO - ⏸️  Template matching logo detection paused for page 1
+2025-11-05 20:52:46,758 - INFO - Processing page 2 with AI-enhanced redaction...
+2025-11-05 20:52:46,980 - INFO - ⏸️  YOLO logo detection paused for page 2
+2025-11-05 20:52:46,980 - INFO - ⏸️  AI vision analysis paused for page 2
+2025-11-05 20:52:46,980 - INFO - ⏸️  Template matching logo detection paused for page 2
+2025-11-05 20:52:47,012 - INFO - Processing page 3 with AI-enhanced redaction...
+2025-11-05 20:52:47,226 - INFO - ⏸️  YOLO logo detection paused for page 3
+2025-11-05 20:52:47,236 - INFO - ⏸️  AI vision analysis paused for page 3
+2025-11-05 20:52:47,236 - INFO - ⏸️  Template matching logo detection paused for page 3
+2025-11-05 20:52:47,275 - INFO - Successfully processed /var/folders/fn/rvxfl9_94b9f3x_lg_mx5b0h0000gn/T/tmphi8eytog/stonerose-floorplans.pdf in 1.96 seconds
+2025-11-05 20:52:47,276 - INFO - Total redactions applied: 0
+2025-11-05 20:52:47,276 - INFO - No redactions were necessary in this document
+2025-11-05 20:55:17,303 - INFO - file_cache is only supported with oauth2client<4.0.0
+2025-11-05 20:56:00,816 - INFO - Starting AI-enhanced processing of /var/folders/fn/rvxfl9_94b9f3x_lg_mx5b0h0000gn/T/tmpncp9jjeu/stonerose-site-plan.pdf
+2025-11-05 20:56:00,825 - INFO - Using Fahad Javed branding for project folder
+2025-11-05 20:56:01,186 - WARNING - Logos folder not found: ./logos/
+2025-11-05 20:56:01,186 - INFO - ✨ PDF PROCESSING MODE: Adding watermark and footer only (NO content removal)
+2025-11-05 20:56:01,187 - INFO - Processing page 1 with AI-enhanced redaction...
+2025-11-05 20:56:01,836 - INFO - ⏸️  YOLO logo detection paused for page 1
+2025-11-05 20:56:01,836 - INFO - ⏸️  AI vision analysis paused for page 1
+2025-11-05 20:56:01,836 - INFO - ⏸️  Template matching logo detection paused for page 1
+2025-11-05 20:56:01,885 - INFO - Successfully processed /var/folders/fn/rvxfl9_94b9f3x_lg_mx5b0h0000gn/T/tmpncp9jjeu/stonerose-site-plan.pdf in 1.07 seconds
+2025-11-05 20:56:01,885 - INFO - Total redactions applied: 0
+2025-11-05 20:56:01,885 - INFO - No redactions were necessary in this document
+2025-11-05 21:07:25,811 - INFO - file_cache is only supported with oauth2client<4.0.0
