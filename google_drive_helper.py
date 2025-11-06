@@ -71,21 +71,48 @@ class DriveManager:
                 if 'token' in st.secrets:
                     token_data = st.secrets['token']
                     
-                    # Handle different formats: token might be a dict or have nested 'token' key
+                    # Parse the token based on format
+                    token_info = None
+                    
                     if isinstance(token_data, dict):
                         if 'token' in token_data:
                             # Format: [token] token = "{...json...}"
                             token_str = token_data['token']
-                            if isinstance(token_str, str) and token_str.strip().startswith('{'):
-                                token_info = json.loads(token_str)
+                            if isinstance(token_str, str):
+                                # Clean and parse JSON string
+                                token_str = token_str.strip()
+                                if token_str.startswith('{') and token_str.endswith('}'):
+                                    try:
+                                        token_info = json.loads(token_str)
+                                    except json.JSONDecodeError as e:
+                                        raise Exception(f"Failed to parse token JSON: {e}")
+                                else:
+                                    raise Exception(f"Token string doesn't look like JSON: {token_str[:100]}...")
                             else:
+                                # token_data itself is the dict
                                 token_info = token_data
                         else:
-                            # Token data is already the dict we need
+                            # Token data is already the dict we need (flat structure)
                             token_info = token_data
-                    else:
-                        # Token data is a string (JSON)
-                        token_info = json.loads(token_data) if isinstance(token_data, str) else token_data
+                    elif isinstance(token_data, str):
+                        # Token data is a JSON string
+                        try:
+                            token_info = json.loads(token_data)
+                        except json.JSONDecodeError as e:
+                            raise Exception(f"Failed to parse token JSON string: {e}")
+                    
+                    if not token_info:
+                        raise Exception("Could not parse token from secrets")
+                    
+                    # Verify required fields
+                    required_fields = ['token', 'refresh_token', 'token_uri', 'client_id', 'client_secret']
+                    missing_fields = [f for f in required_fields if f not in token_info]
+                    if missing_fields:
+                        raise Exception(
+                            f"Token missing required fields: {missing_fields}\n"
+                            f"Token keys found: {list(token_info.keys())}\n"
+                            f"Token preview: {str(token_info)[:200]}..."
+                        )
                     
                     creds = Credentials.from_authorized_user_info(token_info, SCOPES)
                     
