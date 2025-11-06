@@ -71,22 +71,39 @@ class DriveManager:
                 if 'token' in st.secrets:
                     token_data = st.secrets['token']
                     
-                    # Debug: Show what we got
-                    debug_info = {
-                        'type': str(type(token_data)),
-                        'is_dict': isinstance(token_data, dict),
-                        'is_str': isinstance(token_data, str),
-                    }
-                    if isinstance(token_data, dict):
-                        debug_info['keys'] = list(token_data.keys())
-                        if 'token' in token_data:
-                            debug_info['token_type'] = str(type(token_data['token']))
-                            debug_info['token_preview'] = str(token_data['token'])[:100]
-                    
-                    # Parse the token based on format
+                    # Handle Streamlit's AttrDict - convert to regular dict or access attributes
                     token_info = None
                     
-                    if isinstance(token_data, dict):
+                    # Check if it's Streamlit's AttrDict (has to_dict method or dict-like access)
+                    if hasattr(token_data, 'to_dict'):
+                        # Convert AttrDict to regular dict
+                        token_data = token_data.to_dict()
+                    elif hasattr(token_data, '__getitem__') and 'token' in token_data:
+                        # It's dict-like, try to access 'token' key
+                        token_str = token_data['token']
+                        if isinstance(token_str, str):
+                            # Parse JSON string
+                            token_str = token_str.strip()
+                            if token_str.startswith('{') and token_str.endswith('}'):
+                                try:
+                                    token_info = json.loads(token_str)
+                                except json.JSONDecodeError as e:
+                                    raise Exception(f"Failed to parse token JSON: {e}")
+                            else:
+                                raise Exception(f"Token string doesn't look like JSON: {token_str[:100]}...")
+                        else:
+                            # Convert the AttrDict to a regular dict by accessing its items
+                            try:
+                                token_info = dict(token_data)
+                            except:
+                                # Try converting token_str if it's also an AttrDict
+                                if hasattr(token_str, 'to_dict'):
+                                    token_info = token_str.to_dict()
+                                else:
+                                    token_info = dict(token_str) if hasattr(token_str, '__iter__') else None
+                    
+                    # If token_data is a regular dict now, parse it
+                    if token_info is None and isinstance(token_data, dict):
                         if 'token' in token_data:
                             # Format: [token] token = "{...json...}"
                             token_str = token_data['token']
@@ -97,24 +114,28 @@ class DriveManager:
                                     try:
                                         token_info = json.loads(token_str)
                                     except json.JSONDecodeError as e:
-                                        raise Exception(f"Failed to parse token JSON: {e}\nDebug: {debug_info}")
+                                        raise Exception(f"Failed to parse token JSON: {e}")
                                 else:
-                                    raise Exception(f"Token string doesn't look like JSON: {token_str[:100]}...\nDebug: {debug_info}")
+                                    raise Exception(f"Token string doesn't look like JSON: {token_str[:100]}...")
                             else:
-                                # token_data itself is the dict
+                                # token_data itself is the dict we need
                                 token_info = token_data
                         else:
                             # Token data is already the dict we need (flat structure)
                             token_info = token_data
-                    elif isinstance(token_data, str):
+                    elif token_info is None and isinstance(token_data, str):
                         # Token data is a JSON string
                         try:
                             token_info = json.loads(token_data)
                         except json.JSONDecodeError as e:
-                            raise Exception(f"Failed to parse token JSON string: {e}\nDebug: {debug_info}")
+                            raise Exception(f"Failed to parse token JSON string: {e}")
                     
                     if not token_info:
-                        raise Exception(f"Could not parse token from secrets. Debug info: {debug_info}")
+                        raise Exception(
+                            f"Could not parse token from secrets. "
+                            f"Type: {type(token_data)}, "
+                            f"Has 'token' key: {'token' in token_data if hasattr(token_data, '__contains__') else 'unknown'}"
+                        )
                     
                     # Verify required fields
                     required_fields = ['token', 'refresh_token', 'token_uri', 'client_id', 'client_secret']
