@@ -71,6 +71,18 @@ class DriveManager:
                 if 'token' in st.secrets:
                     token_data = st.secrets['token']
                     
+                    # Debug: Show what we got
+                    debug_info = {
+                        'type': str(type(token_data)),
+                        'is_dict': isinstance(token_data, dict),
+                        'is_str': isinstance(token_data, str),
+                    }
+                    if isinstance(token_data, dict):
+                        debug_info['keys'] = list(token_data.keys())
+                        if 'token' in token_data:
+                            debug_info['token_type'] = str(type(token_data['token']))
+                            debug_info['token_preview'] = str(token_data['token'])[:100]
+                    
                     # Parse the token based on format
                     token_info = None
                     
@@ -85,9 +97,9 @@ class DriveManager:
                                     try:
                                         token_info = json.loads(token_str)
                                     except json.JSONDecodeError as e:
-                                        raise Exception(f"Failed to parse token JSON: {e}")
+                                        raise Exception(f"Failed to parse token JSON: {e}\nDebug: {debug_info}")
                                 else:
-                                    raise Exception(f"Token string doesn't look like JSON: {token_str[:100]}...")
+                                    raise Exception(f"Token string doesn't look like JSON: {token_str[:100]}...\nDebug: {debug_info}")
                             else:
                                 # token_data itself is the dict
                                 token_info = token_data
@@ -99,10 +111,10 @@ class DriveManager:
                         try:
                             token_info = json.loads(token_data)
                         except json.JSONDecodeError as e:
-                            raise Exception(f"Failed to parse token JSON string: {e}")
+                            raise Exception(f"Failed to parse token JSON string: {e}\nDebug: {debug_info}")
                     
                     if not token_info:
-                        raise Exception("Could not parse token from secrets")
+                        raise Exception(f"Could not parse token from secrets. Debug info: {debug_info}")
                     
                     # Verify required fields
                     required_fields = ['token', 'refresh_token', 'token_uri', 'client_id', 'client_secret']
