@@ -71,7 +71,7 @@ FAHAD_WATERMARK_TEXT = 'Fahad Javed'
 FAHAD_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/fahad%20javed%20footer.png'
 
 # Common watermark settings
-WATERMARK_OPACITY = 0.40
+WATERMARK_OPACITY = 0.70  # Increased from 0.40 for better visibility
 WATERMARK_ANGLE_DEGREES = 35
 
 # Temporary processing folder
@@ -1145,23 +1145,58 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
     img = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     base = min(canvas_w, canvas_h)
-    font_size = max(24, int(base * 0.12))
-    try:
-        font = ImageFont.truetype('Arial.ttf', font_size)
-    except Exception:
+    font_size = max(48, int(base * 0.25))  # Increased from 0.12 to 0.25 for larger watermark
+    
+    # Try multiple font paths for better compatibility across systems
+    font_paths = [
+        'Arial.ttf',
+        'Helvetica.ttf',
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',  # Linux
+        '/System/Library/Fonts/Helvetica.ttc',  # macOS
+        'C:\\Windows\\Fonts\\arial.ttf',  # Windows
+        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',  # Linux alternative
+    ]
+    
+    font = None
+    for font_path in font_paths:
         try:
-            font = ImageFont.truetype('Helvetica.ttf', font_size)
+            font = ImageFont.truetype(font_path, font_size)
+            break
         except Exception:
-            font = ImageFont.load_default()
+            continue
+    
+    # If no TrueType font found, use default and scale it up
+    using_default_font = False
+    if font is None:
+        font = ImageFont.load_default()
+        using_default_font = True
+        
     text_bbox = draw.textbbox((0, 0), text, font=font)
     text_w = text_bbox[2] - text_bbox[0]
     text_h = text_bbox[3] - text_bbox[1]
+    
+    # If using default font, scale up the dimensions significantly
+    if using_default_font:
+        scale_factor = 15  # Make it 15x larger to compensate for tiny default font
+        text_w = text_w * scale_factor
+        text_h = text_h * scale_factor
+    
     # Increase padding to account for rotation
     padding = 40
     text_img = Image.new('RGBA', (text_w + padding, text_h + padding), (0, 0, 0, 0))
     text_draw = ImageDraw.Draw(text_img)
     alpha = int(255 * max(0.0, min(1.0, opacity)))
-    text_draw.text((padding // 2, padding // 2), text, font=font, fill=(0, 0, 0, alpha))
+    
+    if using_default_font:
+        # Draw text small, then scale up
+        small_img = Image.new('RGBA', (text_bbox[2] - text_bbox[0] + 10, text_bbox[3] - text_bbox[1] + 10), (0, 0, 0, 0))
+        small_draw = ImageDraw.Draw(small_img)
+        small_draw.text((5, 5), text, font=font, fill=(0, 0, 0, alpha))
+        # Scale up with high-quality resampling
+        text_img = small_img.resize((text_w + padding, text_h + padding), Image.Resampling.LANCZOS)
+    else:
+        text_draw.text((padding // 2, padding // 2), text, font=font, fill=(0, 0, 0, alpha))
+    
     rotated = text_img.rotate(angle_deg, expand=True)
     rx, ry = rotated.size
     
