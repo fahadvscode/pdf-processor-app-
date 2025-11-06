@@ -28,8 +28,19 @@ sys.path.insert(0, str(parent_dir))
 SCOPES = ['https://www.googleapis.com/auth/drive']
 
 # Configuration (same as webhook system)
-DRIVE_INPUT_FOLDER_ID = os.getenv('DRIVE_INPUT_FOLDER_ID', '1oRwJHz2eeyDTm0hn6k6XlcII8o67BY88')
-DRIVE_OUTPUT_FOLDER_ID = os.getenv('DRIVE_OUTPUT_FOLDER_ID', '1oRwJHz2eeyDTm0hn6k6XlcII8o67BY88')  # Same as input - we route to AI data subfolder
+# Try to get from Streamlit secrets first, then environment, then default
+def get_folder_id(key, default):
+    """Get folder ID from Streamlit secrets, env var, or default"""
+    try:
+        import streamlit as st
+        if hasattr(st, 'secrets') and key in st.secrets:
+            return st.secrets[key]
+    except:
+        pass
+    return os.getenv(key, default)
+
+DRIVE_INPUT_FOLDER_ID = get_folder_id('DRIVE_INPUT_FOLDER_ID', '1oRwJHz2eeyDTm0hn6k6XlcII8o67BY88')
+DRIVE_OUTPUT_FOLDER_ID = get_folder_id('DRIVE_OUTPUT_FOLDER_ID', '1oRwJHz2eeyDTm0hn6k6XlcII8o67BY88')  # Same as input - we route to AI data subfolder
 
 class DriveManager:
     """Manages Google Drive operations for the Streamlit app"""
@@ -46,41 +57,49 @@ class DriveManager:
         creds = None
         
         # Check if running on Streamlit Cloud with secrets
-        if HAS_STREAMLIT and hasattr(st, 'secrets') and 'credentials' in st.secrets:
+        if HAS_STREAMLIT and hasattr(st, 'secrets'):
             try:
-                # Parse credentials from Streamlit secrets
-                credentials_info = json.loads(st.secrets['credentials']['web'])
-                
-                # Create OAuth flow from client config
-                flow = InstalledAppFlow.from_client_config(
-                    {'web': credentials_info},
-                    SCOPES
-                )
-                
-                # For Streamlit Cloud, we need to handle OAuth differently
-                # Option 1: Use service account (recommended for production)
-                # Option 2: Pre-generate token and store in secrets
-                
-                # Check if we have a pre-stored token in secrets
+                # Check if we have a pre-stored token in secrets (Streamlit Cloud)
                 if 'token' in st.secrets:
-                    token_info = json.loads(st.secrets['token'])
-                    creds = Credentials.from_authorized_user_info(token_info, SCOPES)
-                else:
-                    # For first-time setup, user needs to authenticate locally
-                    # and then copy the token to Streamlit secrets
-                    raise Exception(
-                        "No token found in Streamlit secrets. "
-                        "Please authenticate locally first and copy token to secrets."
-                    )
-                
-                # Refresh if expired
-                if creds and creds.expired and creds.refresh_token:
-                    creds.refresh(Request())
+                    token_data = st.secrets['token']
                     
-                return creds
-                
+                    # Handle different formats: token might be a dict or have nested 'token' key
+                    if isinstance(token_data, dict):
+                        if 'token' in token_data:
+                            # Format: [token] token = "{...json...}"
+                            token_str = token_data['token']
+                            if isinstance(token_str, str) and token_str.strip().startswith('{'):
+                                token_info = json.loads(token_str)
+                            else:
+                                token_info = token_data
+                        else:
+                            # Token data is already the dict we need
+                            token_info = token_data
+                    else:
+                        # Token data is a string (JSON)
+                        token_info = json.loads(token_data) if isinstance(token_data, str) else token_data
+                    
+                    creds = Credentials.from_authorized_user_info(token_info, SCOPES)
+                    
+                    # Refresh if expired
+                    if creds and creds.expired and creds.refresh_token:
+                        creds.refresh(Request())
+                    
+                    return creds
+                else:
+                    raise Exception("Token not found in Streamlit secrets")
+                    
             except Exception as e:
-                # Fall through to local method if Streamlit secrets fail
+                # If on Streamlit Cloud, don't fall back to local files
+                import os
+                # Check if we're on Streamlit Cloud (not local)
+                if os.getenv('STREAMLIT_SHARING_MODE') or os.getenv('STREAMLIT_SERVER_PORT'):
+                    raise Exception(
+                        f"Failed to load credentials from Streamlit secrets: {e}\n"
+                        f"Secrets keys available: {list(st.secrets.keys()) if hasattr(st, 'secrets') else 'None'}\n"
+                        "Please check your secrets configuration in Streamlit Cloud."
+                    )
+                # Fall through to local method only if not on Streamlit Cloud
                 print(f"Streamlit secrets failed: {e}. Trying local credentials...")
         
         # Local development: Use token.pickle
