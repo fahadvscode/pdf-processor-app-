@@ -7,8 +7,11 @@ import os
 import sys
 import pickle
 import json
+import time
+import socket
+import ssl
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -48,10 +51,14 @@ class DriveManager:
     def __init__(self):
         """Initialize Drive service"""
         self.creds = self._get_credentials()
-        self.drive_service = build('drive', 'v3', credentials=self.creds)
+        self.drive_service = self._build_drive_service()
         self.input_folder_id = DRIVE_INPUT_FOLDER_ID
         self.output_folder_id = DRIVE_OUTPUT_FOLDER_ID
-    
+
+    def _build_drive_service(self):
+        """Create a Drive service instance with safe defaults"""
+        return build('drive', 'v3', credentials=self.creds, cache_discovery=False)
+
     def _get_credentials(self):
         """Get Google Drive credentials (supports both local and Streamlit Cloud)"""
         creds = None
@@ -211,6 +218,46 @@ class DriveManager:
                 pickle.dump(creds, token)
         
         return creds
+
+    def _execute_with_retries(self, operation: Callable, description: str, retries: int = 3, backoff: float = 1.5):
+        """Execute a Drive API operation with retry logic for transient network/SSL issues."""
+        last_error = None
+        for attempt in range(1, retries + 1):
+            try:
+                return operation()
+            except Exception as error:
+                last_error = error
+
+                if not self._is_transient_error(error) or attempt == retries:
+                    break
+
+                # Rebuild the Drive service in case the underlying connection went stale
+                try:
+                    self.drive_service = self._build_drive_service()
+                except Exception:
+                    pass
+
+                time.sleep(backoff ** attempt)
+
+        raise Exception(f"{description}: {last_error}")
+
+    @staticmethod
+    def _is_transient_error(error: Exception) -> bool:
+        """Determine if an error is transient and worth retrying."""
+        transient_strings = [
+            "DECRYPTION_FAILED_OR_BAD_RECORD_MAC",
+            "connection reset",
+            "connection aborted",
+            "temporarily unavailable",
+            "deadline exceeded",
+            "bad status line",
+        ]
+
+        if isinstance(error, (socket.timeout, ConnectionError, ssl.SSLError)):
+            return True
+
+        error_str = str(error).lower()
+        return any(value.lower() in error_str for value in transient_strings)
     
     def get_all_projects(self) -> List[Dict]:
         """Get all project folders from input folder (with pagination for 3000+ projects)"""
@@ -231,7 +278,10 @@ class DriveManager:
                 if page_token:
                     query_params['pageToken'] = page_token
                 
-                results = self.drive_service.files().list(**query_params).execute()
+                def list_projects():
+                    return self.drive_service.files().list(**query_params).execute()
+
+                results = self._execute_with_retries(list_projects, "Failed to list projects")
                 
                 # Add projects from this page
                 projects = results.get('files', [])
@@ -261,12 +311,15 @@ class DriveManager:
     def get_brandings(self, project_id: str) -> List[Dict]:
         """Get branding folders for a project"""
         try:
-            results = self.drive_service.files().list(
-                q=f"'{project_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
-                fields="files(id, name)",
-                pageSize=100
-            ).execute()
-            
+            def operation():
+                return self.drive_service.files().list(
+                    q=f"'{project_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+                    fields="files(id, name)",
+                    pageSize=100
+                ).execute()
+
+            results = self._execute_with_retries(operation, "Failed to get brandings")
+
             brandings = results.get('files', [])
             return brandings
         except Exception as e:
@@ -324,28 +377,34 @@ class DriveManager:
     def find_or_create_folder(self, parent_id: str, folder_name: str) -> str:
         """Find or create a folder"""
         try:
-            # Try to find existing folder
-            results = self.drive_service.files().list(
-                q=f"name='{folder_name}' and '{parent_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
-                fields="files(id)",
-                pageSize=1
-            ).execute()
-            
+            def find_folder():
+                return self.drive_service.files().list(
+                    q=f"name='{folder_name}' and '{parent_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+                    fields="files(id)",
+                    pageSize=1
+                ).execute()
+
+            results = self._execute_with_retries(find_folder, f"Failed to find folder '{folder_name}'")
+
             files = results.get('files', [])
             if files:
                 return files[0]['id']
-            
+
             # Create new folder
             folder_metadata = {
                 'name': folder_name,
                 'mimeType': 'application/vnd.google-apps.folder',
                 'parents': [parent_id]
             }
-            folder = self.drive_service.files().create(
-                body=folder_metadata,
-                fields='id'
-            ).execute()
-            
+
+            def create_folder():
+                return self.drive_service.files().create(
+                    body=folder_metadata,
+                    fields='id'
+                ).execute()
+
+            folder = self._execute_with_retries(create_folder, f"Failed to create folder '{folder_name}'")
+
             return folder['id']
         except Exception as e:
             raise Exception(f"Failed to find/create folder {folder_name}: {e}")
@@ -373,37 +432,38 @@ class DriveManager:
                 resumable=True
             )
             
-            # Upload file
-            uploaded_file = self.drive_service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields='id, name, webViewLink, parents, size'
-            ).execute()
+            def create_file():
+                return self.drive_service.files().create(
+                    body=file_metadata,
+                    media_body=media,
+                    fields='id, name, webViewLink, parents, size'
+                ).execute()
+            
+            uploaded_file = self._execute_with_retries(create_file, f"Failed to upload file '{file_name}'")
             
             file_id = uploaded_file.get('id')
             
             # Verify file actually exists in Drive
-            try:
-                verify_file = self.drive_service.files().get(
+            def verify_file_call():
+                return self.drive_service.files().get(
                     fileId=file_id,
                     fields='id, name, parents, webViewLink, size'
                 ).execute()
-                
-                # Verify it's in the correct folder
-                file_parents = verify_file.get('parents', [])
-                if folder_id not in file_parents:
-                    raise Exception(f"File uploaded but not in expected folder. Parents: {file_parents}")
-                
-                return {
-                    'id': verify_file['id'],
-                    'name': verify_file['name'],
-                    'webViewLink': verify_file.get('webViewLink', f'https://drive.google.com/file/d/{file_id}/view'),
-                    'parents': file_parents,
-                    'size': verify_file.get('size', file_size)
-                }
-            except Exception as verify_error:
-                raise Exception(f"Upload succeeded but verification failed: {verify_error}")
             
+            verify_file = self._execute_with_retries(verify_file_call, f"Failed to verify file '{file_name}'")
+            
+            # Verify it's in the correct folder
+            file_parents = verify_file.get('parents', [])
+            if folder_id not in file_parents:
+                raise Exception(f"File uploaded but not in expected folder. Parents: {file_parents}")
+            
+            return {
+                'id': verify_file['id'],
+                'name': verify_file['name'],
+                'webViewLink': verify_file.get('webViewLink', f'https://drive.google.com/file/d/{file_id}/view'),
+                'parents': file_parents,
+                'size': verify_file.get('size', file_size)
+            }
         except Exception as e:
             raise Exception(f"Failed to upload file: {e}")
     
