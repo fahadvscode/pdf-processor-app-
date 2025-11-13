@@ -64,7 +64,7 @@ SHEETS_RANGE = 'Sheet1!A:B'
 
 # Branding configuration - Default to Precon Factory
 DEFAULT_WATERMARK_TEXT = 'Precon Factory'
-DEFAULT_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/precon%20factory%20footer.png'
+DEFAULT_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/footer/footer%20precon%20factory.png'
 
 # Fahad Javed branding configuration
 FAHAD_WATERMARK_TEXT = 'Fahad Javed'
@@ -973,15 +973,7 @@ REDACTION_PATTERNS = {
         r"Brokers?\s+Protected",
         r"(?:Listing|Selling|Exclusive)\s+(?:Agent|Broker|Representative|REALTOR)[^.]*?\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b",
         r"(?:Sales|Leasing)\s+(?:Team|Representative|Agent|Associate)[^.]*?\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b",
-        r"(?:Mr\.|Mrs\.|Ms\.|Dr\.|Sales\s+Rep|Agent)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+"
-    ],
-    "sales_representatives": [
-        # Sales representative names and titles
-        r"(?:Sales\s+Representative|Sales\s+Rep|Sales\s+Agent|Sales\s+Associate|Sales\s+Manager)[^.]*?\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b",
-        r"(?:Builder\s+Sales|Developer\s+Sales|Project\s+Sales)[^.]*?\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b",
-        r"(?:New\s+Home\s+Sales|Pre-construction\s+Sales)[^.]*?\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b",
-        r"(?:Senior\s+Sales|Lead\s+Sales|Sales\s+Director)[^.]*?\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b",
-        r"(?:Mr\.|Mrs\.|Ms\.|Dr\.)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\s+(?:Sales|Rep|Agent|Associate)",
+        r"(?:Mr\.|Mrs\.|Ms\.|Dr\.|Sales\s+Rep|Agent)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\s+(?:Sales|Rep|Agent|Associate)",
         r"(?:Contact|Call|Speak\s+with|Meet\s+with)[^.]*?\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b",
         r"(?:Your\s+Sales|Your\s+Rep|Your\s+Agent)[^.]*?\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b",
         r"(?:Sales\s+Team|Sales\s+Staff)[^.]*?\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b",
