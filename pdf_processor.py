@@ -99,14 +99,14 @@ def process_and_upload_pdf(
             # Find output location in Drive
             update_progress(0.75, "🔍 Finding upload destination in Google Drive...")
             
-            # Get project folder in output
-            # Output structure: ProjectName/BrandingName/AI data/FileType
+            # Get project folder in output (the one with ID)
+            # Output structure: ProjectName_ID/BrandingName/ExistingProjectNameFolder/FileType
             output_project_id = drive_manager.find_or_create_folder(
                 drive_manager.output_folder_id,
                 project_name
             )
             
-            update_progress(0.8, f"✅ Found/created project: {project_name}")
+            update_progress(0.8, f"✅ Found project: {project_name}")
             
             # Get branding folder in output project
             output_branding_id = drive_manager.find_or_create_folder(
@@ -114,19 +114,38 @@ def process_and_upload_pdf(
                 branding_name
             )
             
-            update_progress(0.85, f"✅ Found/created branding: {branding_name}")
+            update_progress(0.85, f"✅ Found branding: {branding_name}")
             
-            # Get/create "AI data" folder
-            ai_data_id = drive_manager.find_or_create_folder(
-                output_branding_id,
-                "AI data"
-            )
+            # Find the EXISTING project name folder under branding
+            # It's the folder that's NOT "Raw" and NOT "AI data"
+            update_progress(0.87, "🔍 Looking for existing project name folder...")
             
-            update_progress(0.9, "✅ Found/created 'AI data' folder")
+            results = drive_manager.drive_service.files().list(
+                q=f"'{output_branding_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+                fields="files(id, name)",
+                pageSize=10
+            ).execute()
             
-            # Get/create file type folder
+            folders = results.get('files', [])
+            project_name_folder = None
+            clean_project_name = None
+            
+            for folder in folders:
+                if folder['name'] not in ['Raw', 'AI data']:
+                    # This is the project name folder!
+                    project_name_folder = folder
+                    clean_project_name = folder['name']
+                    break
+            
+            if not project_name_folder:
+                raise Exception(f"Could not find project name folder under {branding_name}. Expected a folder other than 'Raw' or 'AI data'")
+            
+            project_name_folder_id = project_name_folder['id']
+            update_progress(0.9, f"✅ Found existing project folder: {clean_project_name}")
+            
+            # Get/create file type folder under the project name folder
             file_type_id = drive_manager.find_or_create_folder(
-                ai_data_id,
+                project_name_folder_id,
                 file_type
             )
             
@@ -148,7 +167,7 @@ def process_and_upload_pdf(
             # Return result
             return {
                 'success': True,
-                'output_path': f"{project_name}/{branding_name}/AI data/{file_type}/{uploaded_file.name}",
+                'output_path': f"{project_name}/{branding_name}/{clean_project_name}/{file_type}/{uploaded_file.name}",
                 'file_id': uploaded_file_info['id'],
                 'file_name': uploaded_file_info['name'],
                 'drive_url': uploaded_file_info.get('webViewLink', 'N/A'),
