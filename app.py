@@ -22,6 +22,57 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ============================================================
+# PASSWORD PROTECTION
+# ============================================================
+def check_password():
+    """Returns `True` if the user has entered the correct password."""
+    
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == "Wintertime2021!":
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    # First run, show password input
+    if "password_correct" not in st.session_state:
+        st.markdown("<h1 style='text-align: center;'>🔒 PDF Processor</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center;'>Please enter the password to access this application.</p>", unsafe_allow_html=True)
+        st.text_input(
+            "Password", 
+            type="password", 
+            on_change=password_entered, 
+            key="password",
+            label_visibility="collapsed"
+        )
+        return False
+    # Password not correct, show input + error
+    elif not st.session_state["password_correct"]:
+        st.markdown("<h1 style='text-align: center;'>🔒 PDF Processor</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center;'>Please enter the password to access this application.</p>", unsafe_allow_html=True)
+        st.text_input(
+            "Password", 
+            type="password", 
+            on_change=password_entered, 
+            key="password",
+            label_visibility="collapsed"
+        )
+        st.error("😕 Password incorrect")
+        return False
+    else:
+        # Password correct
+        return True
+
+# Check password before showing the app
+if not check_password():
+    st.stop()  # Do not continue if check_password is not True
+
+# ============================================================
+# MAIN APP (Only shown after password is correct)
+# ============================================================
+
 # Custom CSS for better UI
 st.markdown("""
 <style>
