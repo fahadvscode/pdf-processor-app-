@@ -1163,13 +1163,13 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
         try:
             font = ImageFont.truetype(font_path, font_size)
             break
-    except Exception:
+        except Exception:
             continue
     
     # If no TrueType font found, use default and scale it up
     using_default_font = False
     if font is None:
-            font = ImageFont.load_default()
+        font = ImageFont.load_default()
         using_default_font = True
         
     text_bbox = draw.textbbox((0, 0), text, font=font)
@@ -1196,7 +1196,7 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
         # Scale up with high-quality resampling
         text_img = small_img.resize((text_w + padding, text_h + padding), Image.Resampling.LANCZOS)
     else:
-    text_draw.text((padding // 2, padding // 2), text, font=font, fill=(0, 0, 0, alpha))
+        text_draw.text((padding // 2, padding // 2), text, font=font, fill=(0, 0, 0, alpha))
     
     rotated = text_img.rotate(angle_deg, expand=True)
     rx, ry = rotated.size
