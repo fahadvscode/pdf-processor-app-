@@ -70,6 +70,10 @@ DEFAULT_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/
 FAHAD_WATERMARK_TEXT = 'Fahad Javed'
 FAHAD_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/fahad%20javed%20footer.png'
 
+# GTA Lowrise branding configuration
+GTA_LOWRISE_WATERMARK_TEXT = 'GTA Lowrise 416.399.4289'
+GTA_LOWRISE_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/footer/footer%20gta%20lowrise.png'
+
 # Common watermark settings
 WATERMARK_OPACITY = 0.30  # Light and subtle like a typical watermark
 WATERMARK_ANGLE_DEGREES = 35
@@ -1106,13 +1110,18 @@ def _get_branding_config(project_folder_path: str) -> Tuple[str, str]:
     Determine watermark text and footer URL based on project folder.
     
     Args:
-        project_folder_path: Path to the project folder
+        project_folder_path: Path to the project folder (format: "BrandingName/ProjectName")
         
     Returns:
         Tuple of (watermark_text, footer_image_url)
     """
     # Convert to lowercase for case-insensitive comparison
     folder_path_lower = project_folder_path.lower()
+    
+    # Check if this is a GTA Lowrise project
+    if 'gta' in folder_path_lower and 'lowrise' in folder_path_lower:
+        logger.info("Using GTA Lowrise branding for project folder")
+        return GTA_LOWRISE_WATERMARK_TEXT, GTA_LOWRISE_FOOTER_IMAGE_URL
     
     # Check if this is a Fahad Javed project
     if 'fahad' in folder_path_lower and 'javed' in folder_path_lower:
@@ -1154,13 +1163,13 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
         try:
             font = ImageFont.truetype(font_path, font_size)
             break
-        except Exception:
+    except Exception:
             continue
     
     # If no TrueType font found, use default and scale it up
     using_default_font = False
     if font is None:
-        font = ImageFont.load_default()
+            font = ImageFont.load_default()
         using_default_font = True
         
     text_bbox = draw.textbbox((0, 0), text, font=font)
@@ -1187,7 +1196,7 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
         # Scale up with high-quality resampling
         text_img = small_img.resize((text_w + padding, text_h + padding), Image.Resampling.LANCZOS)
     else:
-        text_draw.text((padding // 2, padding // 2), text, font=font, fill=(0, 0, 0, alpha))
+    text_draw.text((padding // 2, padding // 2), text, font=font, fill=(0, 0, 0, alpha))
     
     rotated = text_img.rotate(angle_deg, expand=True)
     rx, ry = rotated.size

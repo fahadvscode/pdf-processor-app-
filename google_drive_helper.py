@@ -54,7 +54,7 @@ class DriveManager:
         self.drive_service = self._build_drive_service()
         self.input_folder_id = DRIVE_INPUT_FOLDER_ID
         self.output_folder_id = DRIVE_OUTPUT_FOLDER_ID
-
+    
     def _build_drive_service(self):
         """Create a Drive service instance with safe defaults"""
         return build('drive', 'v3', credentials=self.creds, cache_discovery=False)
@@ -313,11 +313,11 @@ class DriveManager:
         try:
             def operation():
                 return self.drive_service.files().list(
-                    q=f"'{project_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
-                    fields="files(id, name)",
-                    pageSize=100
-                ).execute()
-
+                q=f"'{project_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+                fields="files(id, name)",
+                pageSize=100
+            ).execute()
+            
             results = self._execute_with_retries(operation, "Failed to get brandings")
 
             brandings = results.get('files', [])
@@ -379,17 +379,17 @@ class DriveManager:
         try:
             def find_folder():
                 return self.drive_service.files().list(
-                    q=f"name='{folder_name}' and '{parent_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
-                    fields="files(id)",
-                    pageSize=1
-                ).execute()
-
+                q=f"name='{folder_name}' and '{parent_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+                fields="files(id)",
+                pageSize=1
+            ).execute()
+            
             results = self._execute_with_retries(find_folder, f"Failed to find folder '{folder_name}'")
 
             files = results.get('files', [])
             if files:
                 return files[0]['id']
-
+            
             # Create new folder
             folder_metadata = {
                 'name': folder_name,
@@ -399,10 +399,10 @@ class DriveManager:
 
             def create_folder():
                 return self.drive_service.files().create(
-                    body=folder_metadata,
-                    fields='id'
-                ).execute()
-
+                body=folder_metadata,
+                fields='id'
+            ).execute()
+            
             folder = self._execute_with_retries(create_folder, f"Failed to create folder '{folder_name}'")
 
             return folder['id']
@@ -434,10 +434,10 @@ class DriveManager:
             
             def create_file():
                 return self.drive_service.files().create(
-                    body=file_metadata,
-                    media_body=media,
-                    fields='id, name, webViewLink, parents, size'
-                ).execute()
+                body=file_metadata,
+                media_body=media,
+                fields='id, name, webViewLink, parents, size'
+            ).execute()
             
             uploaded_file = self._execute_with_retries(create_file, f"Failed to upload file '{file_name}'")
             
@@ -449,7 +449,7 @@ class DriveManager:
                     fileId=file_id,
                     fields='id, name, parents, webViewLink, size'
                 ).execute()
-            
+                
             verify_file = self._execute_with_retries(verify_file_call, f"Failed to verify file '{file_name}'")
             
             # Verify it's in the correct folder
