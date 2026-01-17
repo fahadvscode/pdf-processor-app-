@@ -14,7 +14,7 @@ from typing import Dict, Callable, Optional
 sys.path.insert(0, str(Path(__file__).parent))  # Current streamlit_app directory
 parent_dir = Path(__file__).parent.parent / "webhook_system"
 if parent_dir.exists():
-sys.path.insert(0, str(parent_dir))
+    sys.path.insert(0, str(parent_dir))
 
 # Import existing PDF processing function
 try:
