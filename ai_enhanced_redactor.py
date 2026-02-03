@@ -64,7 +64,7 @@ SHEETS_SPREADSHEET_ID = '14mrL0LjwhuN0KxZ2AZ_aSrOcIImmyzC-Ys5hjQFT43Y'
 SHEETS_RANGE = 'Sheet1!A:B'
 
 # Branding configuration - Default to Precon Factory
-DEFAULT_WATERMARK_TEXT = 'Precon Factory\n📞 (647) 956-4063'
+DEFAULT_WATERMARK_TEXT = 'Precon Factory\n(647) 956-4063'
 DEFAULT_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/footer/footer%20precon%20factory.png'
 
 # Fahad Javed branding configuration
@@ -1277,7 +1277,7 @@ def _insert_footer_image(page: fitz.Page, footer_png: Optional[bytes]) -> None:
     except Exception as e:
         logger.warning(f"Failed to insert footer image: {e}")
 
-def ai_enhanced_redact_pdf(input_path: str, output_path: str, project_folder_path: str = "") -> Tuple[int, Dict[int, int]]:
+def ai_enhanced_redact_pdf(input_path: str, output_path: str, project_folder_path: str = "", include_footer: bool = True) -> Tuple[int, Dict[int, int]]:
     """
     Enhanced PDF redaction using both AI vision analysis and traditional pattern matching.
     
@@ -1285,6 +1285,7 @@ def ai_enhanced_redact_pdf(input_path: str, output_path: str, project_folder_pat
         input_path: Path to input PDF file
         output_path: Path where redacted PDF will be saved
         project_folder_path: Path to project folder to determine branding
+        include_footer: Whether to add footer image (default: True)
         
     Returns:
         Tuple containing:
@@ -1468,7 +1469,12 @@ def ai_enhanced_redact_pdf(input_path: str, output_path: str, project_folder_pat
             except Exception as e:
                 logger.warning(f"Failed to insert watermark: {e}")
             
-            _insert_footer_image(page, footer_png)
+            # Add footer only if include_footer is True
+            if include_footer:
+                _insert_footer_image(page, footer_png)
+                logger.info(f"Added footer to page {page_num + 1}")
+            else:
+                logger.info(f"Skipped footer for page {page_num + 1} (include_footer=False)")
             
             # Free page image bytes to prevent memory accumulation
             del page_image_bytes
@@ -1533,7 +1539,7 @@ def get_sheets_service():
     creds = _get_google_credentials()
     return build('sheets', 'v4', credentials=creds)
 
-def process_pdf_enhanced(input_path: str, output_path: str, project_folder_path: str = "") -> None:
+def process_pdf_enhanced(input_path: str, output_path: str, project_folder_path: str = "", include_footer: bool = True) -> None:
     """Process a single PDF file with AI-enhanced redaction."""
     start_time = time.time()
     
@@ -1547,7 +1553,7 @@ def process_pdf_enhanced(input_path: str, output_path: str, project_folder_path:
             os.makedirs(output_dir, exist_ok=True)
         
         logger.info(f"Starting AI-enhanced processing of {input_path}")
-        total_redactions, redactions_by_page = ai_enhanced_redact_pdf(input_path, output_path, project_folder_path)
+        total_redactions, redactions_by_page = ai_enhanced_redact_pdf(input_path, output_path, project_folder_path, include_footer)
         
         processing_time = time.time() - start_time
         

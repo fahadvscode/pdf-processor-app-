@@ -38,6 +38,7 @@ def process_and_upload_pdf(
     branding_id: str,
     file_type: str,
     drive_manager,
+    include_footer: bool = True,
     progress_callback: Optional[Callable] = None
 ) -> Dict:
     """
@@ -76,14 +77,16 @@ def process_and_upload_pdf(
             # Process PDF
             output_path = os.path.join(temp_dir, f"processed_{uploaded_file.name}")
             
-            update_progress(0.3, "🎨 Processing PDF (AI redaction, watermark, footer)...")
+            footer_msg = "watermark + footer" if include_footer else "watermark only"
+            update_progress(0.3, f"🎨 Processing PDF ({footer_msg})...")
             
             try:
                 # Use existing AI processing
                 process_pdf_enhanced(
                     input_path=input_path,
                     output_path=output_path,
-                    project_folder_path=f"{branding_name}/{project_name}"
+                    project_folder_path=f"{branding_name}/{project_name}",
+                    include_footer=include_footer
                 )
                 update_progress(0.6, "✅ PDF processing complete")
             except Exception as process_error:

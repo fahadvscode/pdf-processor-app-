@@ -279,8 +279,24 @@ else:
         
         st.divider()
         
-        # Step 4: Upload File
-        st.header("4️⃣ Upload PDF")
+        # Step 4: Footer Options
+        st.header("4️⃣ Footer Options")
+        
+        include_footer = st.toggle(
+            "Include footer image",
+            value=True,
+            help="Toggle ON to add both watermark + footer. Toggle OFF for watermark only."
+        )
+        
+        if include_footer:
+            st.success("✅ Will add: Watermark + Footer")
+        else:
+            st.info("ℹ️ Will add: Watermark only (no footer)")
+        
+        st.divider()
+        
+        # Step 5: Upload File
+        st.header("5️⃣ Upload PDF")
         
         uploaded_file = st.file_uploader(
             "Choose a PDF file",
@@ -310,7 +326,8 @@ else:
                     progress_bar.progress(0.1)
                     
                     # Step 2: Process PDF
-                    status_text.text("🎨 Processing PDF (removing text, adding watermark)...")
+                    footer_msg = "watermark + footer" if include_footer else "watermark only"
+                    status_text.text(f"🎨 Processing PDF (adding {footer_msg})...")
                     progress_bar.progress(0.3)
                     
                     result = process_and_upload_pdf(
@@ -321,6 +338,7 @@ else:
                         branding_id=selected_branding['id'],
                         file_type=selected_type,
                         drive_manager=st.session_state.drive_manager,
+                        include_footer=include_footer,
                         progress_callback=lambda p, msg: (
                             progress_bar.progress(0.3 + (p * 0.6)),
                             status_text.text(msg)

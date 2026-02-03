@@ -32,3 +32,4 @@ uploads/
 processed/
 *.log
 
+streamlit_secrets_NEW.txt
