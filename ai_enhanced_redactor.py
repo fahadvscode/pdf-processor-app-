@@ -21,6 +21,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from pathlib import Path
 import io
 import glob
+import gc  # Garbage collection
 
 import fitz  # PyMuPDF
 from PIL import Image, ImageDraw, ImageFont
@@ -63,11 +64,11 @@ SHEETS_SPREADSHEET_ID = '14mrL0LjwhuN0KxZ2AZ_aSrOcIImmyzC-Ys5hjQFT43Y'
 SHEETS_RANGE = 'Sheet1!A:B'
 
 # Branding configuration - Default to Precon Factory
-DEFAULT_WATERMARK_TEXT = 'Precon Factory'
+DEFAULT_WATERMARK_TEXT = 'Precon Factory\n📞 (647) 956-4063'
 DEFAULT_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/footer/footer%20precon%20factory.png'
 
 # Fahad Javed branding configuration
-FAHAD_WATERMARK_TEXT = 'Fahad Javed'
+FAHAD_WATERMARK_TEXT = 'Fahad Javed\n(647) 898-1739'
 FAHAD_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/fahad%20javed%20footer.png'
 
 # GTA Lowrise branding configuration
@@ -496,6 +497,19 @@ class AIEnhancedRedactor:
                     })
             
             logger.info(f"Computer Vision: Detected {len(detection_zones)} potential logo/branding zones")
+            
+            # Clean up OpenCV images to prevent memory leaks
+            del img_array, img_cv, gray, hsv, combined_mask, top_mask, bottom_mask, edges, header_edges
+            if 'header_region' in locals():
+                del header_region
+            if 'footer_region' in locals():
+                del footer_region
+            if 'header_morph' in locals():
+                del header_morph
+            if 'footer_morph' in locals():
+                del footer_morph
+            gc.collect()
+            
             return {
                 "redaction_zones": detection_zones,
                 "analysis_summary": f"Computer vision detected {len(detection_zones)} logo/branding zones using edge detection and morphological analysis"
@@ -503,6 +517,8 @@ class AIEnhancedRedactor:
             
         except Exception as e:
             logger.error(f"Computer vision analysis failed: {e}")
+            # Clean up on error
+            gc.collect()
             return self._enhanced_computer_vision_analysis(page_image_bytes)
     
     def _fallback_vision_analysis(self, page_image_bytes: bytes) -> Dict[str, Any]:
@@ -793,10 +809,19 @@ class AIEnhancedRedactor:
             detected_logos.sort(key=lambda x: x['confidence'], reverse=True)
             
             logger.info(f"Detected {len(detected_logos)} logos using template matching")
+            
+            # Clean up OpenCV images
+            del page_img
+            gc.collect()
+            
             return detected_logos
             
         except Exception as e:
             logger.error(f"Error in logo detection: {e}")
+            # Clean up on error
+            if 'page_img' in locals():
+                del page_img
+            gc.collect()
             return []
     
     def _rectangles_overlap(self, rect1: Tuple[int, int, int, int], rect2: List[int]) -> bool:
@@ -1146,7 +1171,7 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
     img = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     base = min(canvas_w, canvas_h)
-    font_size = max(36, int(base * 0.15))  # Moderate size - not too large, not too small
+    font_size = max(24, int(base * 0.08))  # Smaller size - reduced from 0.15 to 0.08
     
     # Try multiple font paths for better compatibility across systems
     font_paths = [
@@ -1171,14 +1196,15 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
     if font is None:
         font = ImageFont.load_default()
         using_default_font = True
-        
-    text_bbox = draw.textbbox((0, 0), text, font=font)
+    
+    # Handle multi-line text (for name + phone number)
+    text_bbox = draw.multiline_textbbox((0, 0), text, font=font)
     text_w = text_bbox[2] - text_bbox[0]
     text_h = text_bbox[3] - text_bbox[1]
     
     # If using default font, scale up the dimensions moderately
     if using_default_font:
-        scale_factor = 8  # Moderate scaling - 50% smaller than before (was 15x)
+        scale_factor = 6  # Smaller scaling - reduced from 8
         text_w = text_w * scale_factor
         text_h = text_h * scale_factor
     
@@ -1192,11 +1218,11 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
         # Draw text small, then scale up
         small_img = Image.new('RGBA', (text_bbox[2] - text_bbox[0] + 10, text_bbox[3] - text_bbox[1] + 10), (0, 0, 0, 0))
         small_draw = ImageDraw.Draw(small_img)
-        small_draw.text((5, 5), text, font=font, fill=(0, 0, 0, alpha))
+        small_draw.multiline_text((5, 5), text, font=font, fill=(0, 0, 0, alpha), align='center')
         # Scale up with high-quality resampling
         text_img = small_img.resize((text_w + padding, text_h + padding), Image.Resampling.LANCZOS)
     else:
-        text_draw.text((padding // 2, padding // 2), text, font=font, fill=(0, 0, 0, alpha))
+        text_draw.multiline_text((padding // 2, padding // 2), text, font=font, fill=(0, 0, 0, alpha), align='center')
     
     rotated = text_img.rotate(angle_deg, expand=True)
     rx, ry = rotated.size
@@ -1220,7 +1246,17 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
     img.alpha_composite(rotated, (px, py))
     out = io.BytesIO()
     img.save(out, format='PNG')
-    return out.getvalue()
+    result = out.getvalue()
+    
+    # Clean up PIL Image objects to prevent memory leaks
+    img.close()
+    rotated.close()
+    text_img.close()
+    if using_default_font and 'small_img' in locals():
+        small_img.close()
+    out.close()
+    
+    return result
 
 def _insert_footer_image(page: fitz.Page, footer_png: Optional[bytes]) -> None:
     if not footer_png:
@@ -1262,10 +1298,17 @@ def ai_enhanced_redact_pdf(input_path: str, output_path: str, project_folder_pat
     doc = fitz.open(input_path)
     total_redactions = 0
     redactions_by_page = {}
+    
+    # Check PDF size to prevent memory issues
+    page_count = len(doc)
+    if page_count > 500:
+        logger.warning(f"Large PDF detected ({page_count} pages). Processing may be slow and memory-intensive.")
+    
     ai_redactor = AIEnhancedRedactor()
     
     # NO REMOVAL - Only watermark and footer will be ADDED (no content removed)
     logger.info("✨ PDF PROCESSING MODE: Adding watermark and footer only (NO content removal)")
+    logger.info(f"Processing {page_count} pages")
     
     try:
         for page_num, page in enumerate(doc):
@@ -1276,16 +1319,19 @@ def ai_enhanced_redact_pdf(input_path: str, output_path: str, project_folder_pat
             logger.info(f"Processing page {page_num + 1} with AI-enhanced redaction...")
             
             # Step 1: Extract page as image for analysis
+            # Use lower DPI for memory efficiency (100 instead of 150)
             try:
-                page_image_bytes = ai_redactor.extract_page_as_image(page, dpi=150)
+                page_image_bytes = ai_redactor.extract_page_as_image(page, dpi=100)
                 
                 # Calculate scale factor (image DPI vs page points)
-                image_dpi = 150
+                image_dpi = 100
                 points_per_inch = 72
                 scale_factor = points_per_inch / image_dpi
                 
             except Exception as e:
                 logger.error(f"Failed to extract page image for page {page_num + 1}: {e}")
+                # Clean up and continue
+                gc.collect()
                 continue
             
             # PAUSED: Step 2: YOLO logo detection (PRIMARY METHOD - most accurate)
@@ -1417,16 +1463,40 @@ def ai_enhanced_redact_pdf(input_path: str, output_path: str, project_folder_pat
                     angle_deg=WATERMARK_ANGLE_DEGREES,
                 )
                 page.insert_image(page.rect, stream=wm_png, overlay=True, keep_proportion=False)
+                # Explicitly free watermark memory
+                del wm_png
             except Exception as e:
                 logger.warning(f"Failed to insert watermark: {e}")
             
             _insert_footer_image(page, footer_png)
+            
+            # Free page image bytes to prevent memory accumulation
+            del page_image_bytes
+            
+            # Force garbage collection every 10 pages to prevent memory buildup
+            if (page_num + 1) % 10 == 0:
+                gc.collect()
+                logger.info(f"Memory cleanup after page {page_num + 1}")
         
         # Save the redacted document
         doc.save(output_path)
         
     finally:
         doc.close()
+        # Free document memory
+        del doc
+        # Clean up AI redactor resources
+        if ai_redactor:
+            # Clear logo templates to free memory
+            if hasattr(ai_redactor, 'logo_templates'):
+                ai_redactor.logo_templates.clear()
+            del ai_redactor
+        # Clean up footer image
+        if footer_png:
+            del footer_png
+        # Force garbage collection after document processing
+        gc.collect()
+        logger.info("Memory cleanup completed for document")
     
     return total_redactions, redactions_by_page
 
@@ -1490,9 +1560,15 @@ def process_pdf_enhanced(input_path: str, output_path: str, project_folder_path:
                 logger.info(f"  Page {page_num}: {count} redactions")
         else:
             logger.info("No redactions were necessary in this document")
+        
+        # Force garbage collection after each PDF to prevent memory accumulation
+        gc.collect()
+        logger.info("Memory cleanup completed for PDF processing")
             
     except Exception as e:
         logger.error(f"Error processing {input_path}: {str(e)}")
+        # Clean up memory even on error
+        gc.collect()
         raise
 
 if __name__ == "__main__":
