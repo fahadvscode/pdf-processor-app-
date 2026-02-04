@@ -114,6 +114,8 @@ if 'drive_manager' not in st.session_state:
     st.session_state.drive_manager = None
 if 'projects' not in st.session_state:
     st.session_state.projects = None
+if 'upload_counter' not in st.session_state:
+    st.session_state.upload_counter = 0
 
 def initialize_drive():
     """Initialize Google Drive connection"""
@@ -301,7 +303,8 @@ else:
         uploaded_file = st.file_uploader(
             "Choose a PDF file",
             type=['pdf'],
-            label_visibility="collapsed"
+            label_visibility="collapsed",
+            key=f"pdf_uploader_{st.session_state.upload_counter}"
         )
         
         if uploaded_file:
@@ -369,6 +372,12 @@ else:
                         st.link_button("🔗 Open File in Google Drive", drive_link)
                     
                     st.balloons()
+                    
+                    # Increment counter to reset file uploader for next upload
+                    st.session_state.upload_counter += 1
+                    
+                    # Show ready message for next upload
+                    st.info("✨ Ready for next file! Upload another PDF to process.")
                     
                 except Exception as e:
                     st.markdown(f"""

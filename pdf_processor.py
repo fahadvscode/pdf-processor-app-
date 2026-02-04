@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import tempfile
+import gc
 from pathlib import Path
 from typing import Dict, Callable, Optional
 
@@ -69,6 +70,10 @@ def process_and_upload_pdf(
         with tempfile.TemporaryDirectory() as temp_dir:
             # Save uploaded file
             input_path = os.path.join(temp_dir, uploaded_file.name)
+            
+            # Reset file pointer to beginning (important for multiple uploads in same session)
+            uploaded_file.seek(0)
+            
             with open(input_path, 'wb') as f:
                 f.write(uploaded_file.getbuffer())
             
@@ -167,8 +172,8 @@ def process_and_upload_pdf(
             
             update_progress(1.0, "✅ Upload complete!")
             
-            # Return result
-            return {
+            # Build result
+            result = {
                 'success': True,
                 'output_path': f"{project_name}/{branding_name}/{clean_project_name}/{file_type}/{uploaded_file.name}",
                 'file_id': uploaded_file_info['id'],
@@ -177,9 +182,16 @@ def process_and_upload_pdf(
                 'processing_time': processing_time,
                 'file_size': file_size
             }
+            
+            # Cleanup for next upload in same session
+            gc.collect()
+            
+            return result
     
     except Exception as e:
         # Return error result
         processing_time = time.time() - start_time
+        # Cleanup even on error
+        gc.collect()
         raise Exception(f"Processing failed after {processing_time:.1f}s: {str(e)}")
 
