@@ -58,7 +58,7 @@ class DriveManager:
     def _build_drive_service(self):
         """Create a Drive service instance with safe defaults"""
         return build('drive', 'v3', credentials=self.creds, cache_discovery=False)
-
+    
     def _get_credentials(self):
         """Get Google Drive credentials (supports both local and Streamlit Cloud)"""
         creds = None
@@ -313,13 +313,13 @@ class DriveManager:
         try:
             def operation():
                 return self.drive_service.files().list(
-                q=f"'{project_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
-                fields="files(id, name)",
-                pageSize=100
-            ).execute()
+                    q=f"'{project_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+                    fields="files(id, name)",
+                    pageSize=100
+                ).execute()
             
             results = self._execute_with_retries(operation, "Failed to get brandings")
-
+            
             brandings = results.get('files', [])
             return brandings
         except Exception as e:
@@ -379,13 +379,13 @@ class DriveManager:
         try:
             def find_folder():
                 return self.drive_service.files().list(
-                q=f"name='{folder_name}' and '{parent_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
-                fields="files(id)",
-                pageSize=1
-            ).execute()
+                    q=f"name='{folder_name}' and '{parent_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+                    fields="files(id)",
+                    pageSize=1
+                ).execute()
             
             results = self._execute_with_retries(find_folder, f"Failed to find folder '{folder_name}'")
-
+            
             files = results.get('files', [])
             if files:
                 return files[0]['id']
@@ -399,12 +399,12 @@ class DriveManager:
 
             def create_folder():
                 return self.drive_service.files().create(
-                body=folder_metadata,
-                fields='id'
-            ).execute()
+                    body=folder_metadata,
+                    fields='id'
+                ).execute()
             
             folder = self._execute_with_retries(create_folder, f"Failed to create folder '{folder_name}'")
-
+            
             return folder['id']
         except Exception as e:
             raise Exception(f"Failed to find/create folder {folder_name}: {e}")
@@ -434,10 +434,10 @@ class DriveManager:
             
             def create_file():
                 return self.drive_service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields='id, name, webViewLink, parents, size'
-            ).execute()
+                    body=file_metadata,
+                    media_body=media,
+                    fields='id, name, webViewLink, parents, size'
+                ).execute()
             
             uploaded_file = self._execute_with_retries(create_file, f"Failed to upload file '{file_name}'")
             
@@ -451,19 +451,19 @@ class DriveManager:
                 ).execute()
                 
             verify_file = self._execute_with_retries(verify_file_call, f"Failed to verify file '{file_name}'")
-            
-            # Verify it's in the correct folder
-            file_parents = verify_file.get('parents', [])
-            if folder_id not in file_parents:
-                raise Exception(f"File uploaded but not in expected folder. Parents: {file_parents}")
-            
-            return {
-                'id': verify_file['id'],
-                'name': verify_file['name'],
-                'webViewLink': verify_file.get('webViewLink', f'https://drive.google.com/file/d/{file_id}/view'),
-                'parents': file_parents,
-                'size': verify_file.get('size', file_size)
-            }
+                
+                # Verify it's in the correct folder
+                file_parents = verify_file.get('parents', [])
+                if folder_id not in file_parents:
+                    raise Exception(f"File uploaded but not in expected folder. Parents: {file_parents}")
+                
+                return {
+                    'id': verify_file['id'],
+                    'name': verify_file['name'],
+                    'webViewLink': verify_file.get('webViewLink', f'https://drive.google.com/file/d/{file_id}/view'),
+                    'parents': file_parents,
+                    'size': verify_file.get('size', file_size)
+                }
         except Exception as e:
             raise Exception(f"Failed to upload file: {e}")
     
