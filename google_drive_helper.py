@@ -449,21 +449,21 @@ class DriveManager:
                     fileId=file_id,
                     fields='id, name, parents, webViewLink, size'
                 ).execute()
-                
+            
             verify_file = self._execute_with_retries(verify_file_call, f"Failed to verify file '{file_name}'")
-                
-                # Verify it's in the correct folder
-                file_parents = verify_file.get('parents', [])
-                if folder_id not in file_parents:
-                    raise Exception(f"File uploaded but not in expected folder. Parents: {file_parents}")
-                
-                return {
-                    'id': verify_file['id'],
-                    'name': verify_file['name'],
-                    'webViewLink': verify_file.get('webViewLink', f'https://drive.google.com/file/d/{file_id}/view'),
-                    'parents': file_parents,
-                    'size': verify_file.get('size', file_size)
-                }
+            
+            # Verify it's in the correct folder
+            file_parents = verify_file.get('parents', [])
+            if folder_id not in file_parents:
+                raise Exception(f"File uploaded but not in expected folder. Parents: {file_parents}")
+            
+            return {
+                'id': verify_file['id'],
+                'name': verify_file['name'],
+                'webViewLink': verify_file.get('webViewLink', f'https://drive.google.com/file/d/{file_id}/view'),
+                'parents': file_parents,
+                'size': verify_file.get('size', file_size)
+            }
         except Exception as e:
             raise Exception(f"Failed to upload file: {e}")
     
