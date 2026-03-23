@@ -78,7 +78,8 @@ GTA_LOWRISE_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage
 # Common watermark settings
 WATERMARK_OPACITY = 0.30  # Light and subtle like a typical watermark
 WATERMARK_ANGLE_DEGREES = 35
-WATERMARK_RENDER_SCALE = 2
+WATERMARK_RENDER_SCALE = 3
+WATERMARK_FONT_FRACTION_OF_MIN_SIDE = 0.14
 
 # Temporary processing folder
 TEMP_PROCESSING_FOLDER = "./temp_processing/"
@@ -1246,7 +1247,8 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
     img = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     base = min(canvas_w, canvas_h)
-    font_size = max(24 * scale, int(base * 0.08))
+    frac = float(WATERMARK_FONT_FRACTION_OF_MIN_SIDE)
+    font_size = max(36 * scale, int(base * frac))
 
     font = _load_watermark_truetype(font_size)
     using_default_font = font is None
@@ -1275,7 +1277,7 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
             align="center",
         )
     else:
-        upscale = max(6, 4 * scale)
+        upscale = max(10, 6 * scale)
         small_img = Image.new("RGBA", (max(1, text_w + 10), max(1, text_h + 10)), (0, 0, 0, 0))
         sd = ImageDraw.Draw(small_img)
         sd.multiline_text((5, 5), text, font=font, fill=(0, 0, 0, alpha), align="center")
@@ -1306,7 +1308,7 @@ def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: f
 
     img.alpha_composite(rotated, (int(px), int(py)))
     out = io.BytesIO()
-    img.save(out, format="PNG")
+    img.save(out, format="PNG", compress_level=1)  # lossless; fast zlib level
     result = out.getvalue()
     text_img.close()
     rotated.close()
