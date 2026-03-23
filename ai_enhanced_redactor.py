@@ -1261,7 +1261,7 @@ def _apply_vector_watermark(page: fitz.Page, text: str, opacity: float, angle_de
         x = cx - lw / 2.0
         y = y_first + i * line_height
         twriter.append(fitz.Point(x, y), line, font=font, fontsize=fontsize)
-    morph = (fitz.Point(cx, cy), fitz.Matrix().prerotate(angle_deg))
+    morph = (fitz.Point(cx, cy), fitz.Matrix(angle_deg))
     alpha = max(0.0, min(1.0, float(opacity)))
     twriter.write_text(page, color=(0, 0, 0), opacity=alpha, overlay=True, morph=morph)
 
