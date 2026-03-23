@@ -78,6 +78,7 @@ GTA_LOWRISE_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage
 # Common watermark settings
 WATERMARK_OPACITY = 0.30  # Light and subtle like a typical watermark
 WATERMARK_ANGLE_DEGREES = 35
+WATERMARK_RENDER_SCALE = 2
 
 # Temporary processing folder
 TEMP_PROCESSING_FOLDER = "./temp_processing/"
@@ -1166,96 +1167,151 @@ def _download_image_bytes(url: str) -> Optional[bytes]:
         logger.error(f"Failed to download image from {url}: {e}")
         return None
 
+
+_RESAMPLE_BICUBIC = getattr(Image, "Resampling", Image).BICUBIC
+_RESAMPLE_LANCZOS = getattr(Image, "Resampling", Image).LANCZOS
+
+
+def _watermark_script_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _watermark_font_candidate_paths() -> List[str]:
+    """Filesystem paths to try for a real vector font (avoids blurry default bitmap font)."""
+    base = _watermark_script_dir()
+    candidates: List[str] = [
+        str(base / "fonts" / "DejaVuSans-Bold.ttf"),
+        str(base / "fonts" / "DejaVuSans.ttf"),
+        str(base / "Arial.ttf"),
+        str(base / "Helvetica.ttf"),
+    ]
+    if sys.platform == "darwin":
+        candidates.extend(
+            [
+                "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/System/Library/Fonts/Supplemental/Times New Roman.ttf",
+                "/Library/Fonts/Arial.ttf",
+                "/System/Library/Fonts/Helvetica.ttc",
+                "/System/Library/Fonts/Supplemental/Verdana.ttf",
+            ]
+        )
+    elif sys.platform == "win32":
+        windir = os.environ.get("WINDIR", r"C:\Windows")
+        candidates.extend(
+            [
+                os.path.join(windir, "Fonts", "arialbd.ttf"),
+                os.path.join(windir, "Fonts", "arial.ttf"),
+                os.path.join(windir, "Fonts", "calibrib.ttf"),
+                os.path.join(windir, "Fonts", "calibri.ttf"),
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            ]
+        )
+    return candidates
+
+
+def _load_watermark_truetype(font_size: int):
+    """Return a PIL vector font, or None if no file could be opened."""
+    for path in _watermark_font_candidate_paths():
+        if not path or not os.path.isfile(path):
+            continue
+        lower = path.lower()
+        try:
+            if lower.endswith(".ttc") or lower.endswith(".otc"):
+                for idx in (0, 1):
+                    try:
+                        return ImageFont.truetype(path, font_size, index=idx)
+                    except OSError:
+                        continue
+            else:
+                return ImageFont.truetype(path, font_size)
+        except OSError:
+            continue
+    return None
+
+
 def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: float, angle_deg: float) -> bytes:
-    canvas_w, canvas_h = int(page_width), int(page_height)
-    img = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
+    """Build a transparent PNG watermark; uses system TTF and supersampling for sharp PDF output."""
+    scale = max(1, int(WATERMARK_RENDER_SCALE))
+    canvas_w = int(page_width * scale)
+    canvas_h = int(page_height * scale)
+    img = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     base = min(canvas_w, canvas_h)
-    font_size = max(24, int(base * 0.08))  # Smaller size - reduced from 0.15 to 0.08
-    
-    # Try multiple font paths for better compatibility across systems
-    font_paths = [
-        'Arial.ttf',
-        'Helvetica.ttf',
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',  # Linux
-        '/System/Library/Fonts/Helvetica.ttc',  # macOS
-        'C:\\Windows\\Fonts\\arial.ttf',  # Windows
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',  # Linux alternative
-    ]
-    
-    font = None
-    for font_path in font_paths:
-        try:
-            font = ImageFont.truetype(font_path, font_size)
-            break
-        except Exception:
-            continue
-    
-    # If no TrueType font found, use default and scale it up
-    using_default_font = False
-    if font is None:
+    font_size = max(24 * scale, int(base * 0.08))
+
+    font = _load_watermark_truetype(font_size)
+    using_default_font = font is None
+    if using_default_font:
         font = ImageFont.load_default()
-        using_default_font = True
-    
-    # Handle multi-line text (for name + phone number)
+        logger.warning(
+            "Watermark: no TrueType font found; text may look soft. "
+            "Install Arial/DejaVu or add fonts/DejaVuSans.ttf next to this script."
+        )
+
     text_bbox = draw.multiline_textbbox((0, 0), text, font=font)
-    text_w = text_bbox[2] - text_bbox[0]
-    text_h = text_bbox[3] - text_bbox[1]
-    
-    # If using default font, scale up the dimensions moderately
-    if using_default_font:
-        scale_factor = 6  # Smaller scaling - reduced from 8
-        text_w = text_w * scale_factor
-        text_h = text_h * scale_factor
-    
-    # Increase padding to account for rotation
-    padding = 40
-    text_img = Image.new('RGBA', (text_w + padding, text_h + padding), (0, 0, 0, 0))
-    text_draw = ImageDraw.Draw(text_img)
+    text_w = max(1, text_bbox[2] - text_bbox[0])
+    text_h = max(1, text_bbox[3] - text_bbox[1])
+    padding = 40 * scale
+    margin = 50 * scale
     alpha = int(255 * max(0.0, min(1.0, opacity)))
-    
-    if using_default_font:
-        # Draw text small, then scale up
-        small_img = Image.new('RGBA', (text_bbox[2] - text_bbox[0] + 10, text_bbox[3] - text_bbox[1] + 10), (0, 0, 0, 0))
-        small_draw = ImageDraw.Draw(small_img)
-        small_draw.multiline_text((5, 5), text, font=font, fill=(0, 0, 0, alpha), align='center')
-        # Scale up with high-quality resampling
-        text_img = small_img.resize((text_w + padding, text_h + padding), Image.Resampling.LANCZOS)
+
+    if not using_default_font:
+        text_img = Image.new("RGBA", (text_w + padding, text_h + padding), (0, 0, 0, 0))
+        text_draw = ImageDraw.Draw(text_img)
+        text_draw.multiline_text(
+            (padding // 2, padding // 2),
+            text,
+            font=font,
+            fill=(0, 0, 0, alpha),
+            align="center",
+        )
     else:
-        text_draw.multiline_text((padding // 2, padding // 2), text, font=font, fill=(0, 0, 0, alpha), align='center')
-    
-    rotated = text_img.rotate(angle_deg, expand=True)
+        upscale = max(6, 4 * scale)
+        small_img = Image.new("RGBA", (max(1, text_w + 10), max(1, text_h + 10)), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(small_img)
+        sd.multiline_text((5, 5), text, font=font, fill=(0, 0, 0, alpha), align="center")
+        tw = text_w * upscale + padding
+        th = text_h * upscale + padding
+        text_img = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+        resized = small_img.resize(
+            (max(1, text_w * upscale), max(1, text_h * upscale)),
+            _RESAMPLE_LANCZOS,
+        )
+        text_img.paste(resized, (padding // 2, padding // 2))
+        small_img.close()
+
+    try:
+        rotated = text_img.rotate(angle_deg, expand=True, resample=_RESAMPLE_BICUBIC, fillcolor=(0, 0, 0, 0))
+    except TypeError:
+        rotated = text_img.rotate(angle_deg, expand=True, resample=_RESAMPLE_BICUBIC)
     rx, ry = rotated.size
-    
-    # Ensure the watermark fits within the page bounds
-    # Add extra margin to prevent cutoff
-    margin = 50
+
     px = max(margin, (canvas_w - rx) // 2)
     py = max(margin, (canvas_h - ry) // 2)
-    
-    # Make sure watermark doesn't extend beyond page bounds
     if px + rx > canvas_w - margin:
         px = canvas_w - rx - margin
     if py + ry > canvas_h - margin:
         py = canvas_h - ry - margin
-    
-    # Ensure coordinates are not negative
     px = max(0, px)
     py = max(0, py)
-    
-    img.alpha_composite(rotated, (px, py))
+
+    img.alpha_composite(rotated, (int(px), int(py)))
     out = io.BytesIO()
-    img.save(out, format='PNG')
+    img.save(out, format="PNG")
     result = out.getvalue()
-    
-    # Clean up PIL Image objects to prevent memory leaks
-    img.close()
-    rotated.close()
     text_img.close()
-    if using_default_font and 'small_img' in locals():
-        small_img.close()
+    rotated.close()
+    img.close()
     out.close()
-    
     return result
 
 def _insert_footer_image(page: fitz.Page, footer_png: Optional[bytes]) -> None:
