@@ -24,7 +24,7 @@ import glob
 import gc  # Garbage collection
 
 import fitz  # PyMuPDF
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 import cv2
 import numpy as np
 # Google Drive API imports
@@ -72,13 +72,13 @@ FAHAD_WATERMARK_TEXT = 'Fahad Javed\n(647) 898-1739'
 FAHAD_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/fahad%20javed%20footer.png'
 
 # GTA Lowrise branding configuration
-GTA_LOWRISE_WATERMARK_TEXT = 'GTA Lowrise 416.399.4289'
+GTA_LOWRISE_WATERMARK_TEXT = 'GTA Lowrise\n416.399.4289'
 GTA_LOWRISE_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/footer/footer%20gta%20lowrise.png'
 
 # Common watermark settings
 WATERMARK_OPACITY = 0.30  # Light and subtle like a typical watermark
 WATERMARK_ANGLE_DEGREES = 35
-WATERMARK_RENDER_SCALE = 3
+# Vector text via PyMuPDF (not a bitmap); size vs min(page width, height) in points
 WATERMARK_FONT_FRACTION_OF_MIN_SIDE = 0.14
 
 # Temporary processing folder
@@ -1169,16 +1169,12 @@ def _download_image_bytes(url: str) -> Optional[bytes]:
         return None
 
 
-_RESAMPLE_BICUBIC = getattr(Image, "Resampling", Image).BICUBIC
-_RESAMPLE_LANCZOS = getattr(Image, "Resampling", Image).LANCZOS
-
-
 def _watermark_script_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
 def _watermark_font_candidate_paths() -> List[str]:
-    """Filesystem paths to try for a real vector font (avoids blurry default bitmap font)."""
+    """Filesystem paths to try for an embedded vector font (optional; falls back to PDF Helvetica-Bold)."""
     base = _watermark_script_dir()
     candidates: List[str] = [
         str(base / "fonts" / "DejaVuSans-Bold.ttf"),
@@ -1219,102 +1215,56 @@ def _watermark_font_candidate_paths() -> List[str]:
     return candidates
 
 
-def _load_watermark_truetype(font_size: int):
-    """Return a PIL vector font, or None if no file could be opened."""
+def _load_fitz_watermark_font() -> fitz.Font:
+    """Embedded TTF/TTC when available; otherwise standard PDF Helvetica-Bold (always vector)."""
     for path in _watermark_font_candidate_paths():
         if not path or not os.path.isfile(path):
             continue
-        lower = path.lower()
         try:
-            if lower.endswith(".ttc") or lower.endswith(".otc"):
-                for idx in (0, 1):
-                    try:
-                        return ImageFont.truetype(path, font_size, index=idx)
-                    except OSError:
-                        continue
-            else:
-                return ImageFont.truetype(path, font_size)
-        except OSError:
-            continue
-    return None
+            return fitz.Font(fontfile=path)
+        except Exception:
+            try:
+                with open(path, "rb") as fp:
+                    return fitz.Font(fontbuffer=fp.read())
+            except Exception:
+                continue
+    logger.info("Watermark: using built-in Helvetica-Bold (standard PDF font)")
+    return fitz.Font("hebo")
 
 
-def _make_watermark_png(text: str, page_width: int, page_height: int, opacity: float, angle_deg: float) -> bytes:
-    """Build a transparent PNG watermark; uses system TTF and supersampling for sharp PDF output."""
-    scale = max(1, int(WATERMARK_RENDER_SCALE))
-    canvas_w = int(page_width * scale)
-    canvas_h = int(page_height * scale)
-    img = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    base = min(canvas_w, canvas_h)
+def _watermark_text_lines(text: str) -> List[str]:
+    """Split on newlines so line 1 = company, line 2+ = phone etc. (order preserved)."""
+    return [ln.strip() for ln in text.replace("\r\n", "\n").split("\n") if ln.strip()]
+
+
+def _apply_vector_watermark(page: fitz.Page, text: str, opacity: float, angle_deg: float) -> None:
+    """Draw diagonal watermark as real PDF text (no bitmap, no aspect stretch)."""
+    lines = _watermark_text_lines(text)
+    if not lines:
+        return
+    font = _load_fitz_watermark_font()
+    rect = page.rect
+    w, h = rect.width, rect.height
+    cx, cy = w / 2.0, h / 2.0
     frac = float(WATERMARK_FONT_FRACTION_OF_MIN_SIDE)
-    font_size = max(36 * scale, int(base * frac))
-
-    font = _load_watermark_truetype(font_size)
-    using_default_font = font is None
-    if using_default_font:
-        font = ImageFont.load_default()
-        logger.warning(
-            "Watermark: no TrueType font found; text may look soft. "
-            "Install Arial/DejaVu or add fonts/DejaVuSans.ttf next to this script."
-        )
-
-    text_bbox = draw.multiline_textbbox((0, 0), text, font=font)
-    text_w = max(1, text_bbox[2] - text_bbox[0])
-    text_h = max(1, text_bbox[3] - text_bbox[1])
-    padding = 40 * scale
-    margin = 50 * scale
-    alpha = int(255 * max(0.0, min(1.0, opacity)))
-
-    if not using_default_font:
-        text_img = Image.new("RGBA", (text_w + padding, text_h + padding), (0, 0, 0, 0))
-        text_draw = ImageDraw.Draw(text_img)
-        text_draw.multiline_text(
-            (padding // 2, padding // 2),
-            text,
-            font=font,
-            fill=(0, 0, 0, alpha),
-            align="center",
-        )
+    fontsize = max(24.0, min(w, h) * frac)
+    asc, desc = font.ascender, font.descender
+    if asc > desc and (asc - desc) > 0.01:
+        line_height = fontsize * (asc - desc)
     else:
-        upscale = max(10, 6 * scale)
-        small_img = Image.new("RGBA", (max(1, text_w + 10), max(1, text_h + 10)), (0, 0, 0, 0))
-        sd = ImageDraw.Draw(small_img)
-        sd.multiline_text((5, 5), text, font=font, fill=(0, 0, 0, alpha), align="center")
-        tw = text_w * upscale + padding
-        th = text_h * upscale + padding
-        text_img = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
-        resized = small_img.resize(
-            (max(1, text_w * upscale), max(1, text_h * upscale)),
-            _RESAMPLE_LANCZOS,
-        )
-        text_img.paste(resized, (padding // 2, padding // 2))
-        small_img.close()
+        line_height = fontsize * 1.2
+    span = (len(lines) - 1) * line_height
+    y_first = cy - span / 2.0
+    twriter = fitz.TextWriter(rect)
+    for i, line in enumerate(lines):
+        lw = font.text_length(line, fontsize)
+        x = cx - lw / 2.0
+        y = y_first + i * line_height
+        twriter.append(fitz.Point(x, y), line, font=font, fontsize=fontsize)
+    morph = (fitz.Point(cx, cy), fitz.Matrix().prerotate(angle_deg))
+    alpha = max(0.0, min(1.0, float(opacity)))
+    twriter.write_text(page, color=(0, 0, 0), opacity=alpha, overlay=True, morph=morph)
 
-    try:
-        rotated = text_img.rotate(angle_deg, expand=True, resample=_RESAMPLE_BICUBIC, fillcolor=(0, 0, 0, 0))
-    except TypeError:
-        rotated = text_img.rotate(angle_deg, expand=True, resample=_RESAMPLE_BICUBIC)
-    rx, ry = rotated.size
-
-    px = max(margin, (canvas_w - rx) // 2)
-    py = max(margin, (canvas_h - ry) // 2)
-    if px + rx > canvas_w - margin:
-        px = canvas_w - rx - margin
-    if py + ry > canvas_h - margin:
-        py = canvas_h - ry - margin
-    px = max(0, px)
-    py = max(0, py)
-
-    img.alpha_composite(rotated, (int(px), int(py)))
-    out = io.BytesIO()
-    img.save(out, format="PNG", compress_level=1)  # lossless; fast zlib level
-    result = out.getvalue()
-    text_img.close()
-    rotated.close()
-    img.close()
-    out.close()
-    return result
 
 def _insert_footer_image(page: fitz.Page, footer_png: Optional[bytes]) -> None:
     if not footer_png:
@@ -1514,16 +1464,12 @@ def ai_enhanced_redact_pdf(input_path: str, output_path: str, project_folder_pat
             
             # Add watermark and footer
             try:
-                wm_png = _make_watermark_png(
-                    text=watermark_text,
-                    page_width=int(page_width),
-                    page_height=int(page_height),
-                    opacity=WATERMARK_OPACITY,
-                    angle_deg=WATERMARK_ANGLE_DEGREES,
+                _apply_vector_watermark(
+                    page,
+                    watermark_text,
+                    WATERMARK_OPACITY,
+                    WATERMARK_ANGLE_DEGREES,
                 )
-                page.insert_image(page.rect, stream=wm_png, overlay=True, keep_proportion=False)
-                # Explicitly free watermark memory
-                del wm_png
             except Exception as e:
                 logger.warning(f"Failed to insert watermark: {e}")
             
