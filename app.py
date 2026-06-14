@@ -4,15 +4,13 @@ Simple, reliable PDF processing with Google Drive integration
 """
 
 import streamlit as st
-import sys
-import os
 from pathlib import Path
 
-# Add parent directory to path to import existing modules
-sys.path.insert(0, str(Path(__file__).parent.parent / "webhook_system"))
-
 from google_drive_helper import DriveManager
-from pdf_processor import process_and_upload_pdf
+from pdf_processor import process_and_upload_pdf, process_and_upload_pdfs
+
+MAX_PDF_FILES = 50
+MAX_FILE_SIZE_MB = 500
 
 # Page config
 st.set_page_config(
@@ -164,15 +162,15 @@ with st.sidebar:
     st.divider()
     
     st.header("ℹ️ About")
-    st.markdown("""
+    st.markdown(f"""
     **How it works:**
     1. Select project & branding
     2. Choose file type
-    3. Upload PDF
-    4. Watch it process
+    3. Upload up to **{MAX_PDF_FILES} PDFs** at once
+    4. Watch them process
     5. Done! ✨
     
-    **No waiting, no webhooks, no complexity.**
+    **Limits:** {MAX_PDF_FILES} files per batch, {MAX_FILE_SIZE_MB} MB each.
     """)
 
 # Main content
@@ -297,88 +295,142 @@ else:
         
         st.divider()
         
-        # Step 5: Upload File
-        st.header("5️⃣ Upload PDF")
-        
-        uploaded_file = st.file_uploader(
-            "Choose a PDF file",
+        # Step 5: Upload Files
+        st.header("5️⃣ Upload PDFs")
+        st.caption(f"Select up to {MAX_PDF_FILES} PDFs at once (max {MAX_FILE_SIZE_MB} MB each).")
+
+        uploaded_files = st.file_uploader(
+            "Choose PDF files",
             type=['pdf'],
+            accept_multiple_files=True,
             label_visibility="collapsed",
             key=f"pdf_uploader_{st.session_state.upload_counter}"
         )
-        
-        if uploaded_file:
-            # Show file info
-            file_size_mb = uploaded_file.size / (1024 * 1024)
-            st.success(f"✅ File selected: **{uploaded_file.name}** ({file_size_mb:.2f} MB)")
-            
+
+        if uploaded_files:
+            if len(uploaded_files) > MAX_PDF_FILES:
+                st.error(f"❌ Too many files. Please upload at most {MAX_PDF_FILES} PDFs at a time.")
+                st.stop()
+
+            oversized = [
+                f for f in uploaded_files
+                if f.size > MAX_FILE_SIZE_MB * 1024 * 1024
+            ]
+            if oversized:
+                names = ", ".join(f.name for f in oversized)
+                st.error(f"❌ These files exceed {MAX_FILE_SIZE_MB} MB: {names}")
+                st.stop()
+
+            total_size_mb = sum(f.size for f in uploaded_files) / (1024 * 1024)
+            st.success(
+                f"✅ **{len(uploaded_files)}** file(s) selected ({total_size_mb:.2f} MB total)"
+            )
+
+            with st.expander("View selected files", expanded=len(uploaded_files) <= 10):
+                for uploaded_file in uploaded_files:
+                    file_size_mb = uploaded_file.size / (1024 * 1024)
+                    st.write(f"- {uploaded_file.name} ({file_size_mb:.2f} MB)")
+
             # Check if file type is selected
             if not selected_type:
                 st.error("❌ Please select a file type first (Step 3)")
                 st.stop()
-            
+
+            button_label = (
+                "🚀 Process PDF"
+                if len(uploaded_files) == 1
+                else f"🚀 Process {len(uploaded_files)} PDFs"
+            )
+
             # Process button
-            if st.button("🚀 Process PDF", type="primary", use_container_width=True):
+            if st.button(button_label, type="primary", use_container_width=True):
                 try:
-                    # Processing
                     progress_bar = st.progress(0)
                     status_text = st.empty()
-                    
-                    # Step 1: Download to temp
-                    status_text.text("📥 Preparing file...")
-                    progress_bar.progress(0.1)
-                    
-                    # Step 2: Process PDF
+
                     footer_msg = "watermark + footer" if include_footer else "watermark only"
-                    status_text.text(f"🎨 Processing PDF (adding {footer_msg})...")
-                    progress_bar.progress(0.3)
-                    
-                    result = process_and_upload_pdf(
-                        uploaded_file=uploaded_file,
-                        project_name=selected_project['name'],
-                        project_id=selected_project['id'],
-                        branding_name=selected_branding_name,
-                        branding_id=selected_branding['id'],
-                        file_type=selected_type,
-                        drive_manager=st.session_state.drive_manager,
-                        include_footer=include_footer,
-                        progress_callback=lambda p, msg: (
-                            progress_bar.progress(0.3 + (p * 0.6)),
-                            status_text.text(msg)
+                    status_text.text(f"🎨 Processing {len(uploaded_files)} PDF(s) ({footer_msg})...")
+
+                    if len(uploaded_files) == 1:
+                        result = process_and_upload_pdf(
+                            uploaded_file=uploaded_files[0],
+                            project_name=selected_project['name'],
+                            project_id=selected_project['id'],
+                            branding_name=selected_branding_name,
+                            branding_id=selected_branding['id'],
+                            file_type=selected_type,
+                            drive_manager=st.session_state.drive_manager,
+                            include_footer=include_footer,
+                            progress_callback=lambda p, msg: (
+                                progress_bar.progress(p),
+                                status_text.text(msg),
+                            ),
                         )
-                    )
-                    
-                    # Complete
+                        batch_results = [result]
+                    else:
+                        batch_results = process_and_upload_pdfs(
+                            uploaded_files=uploaded_files,
+                            project_name=selected_project['name'],
+                            project_id=selected_project['id'],
+                            branding_name=selected_branding_name,
+                            branding_id=selected_branding['id'],
+                            file_type=selected_type,
+                            drive_manager=st.session_state.drive_manager,
+                            include_footer=include_footer,
+                            progress_callback=lambda p, msg: (
+                                progress_bar.progress(p),
+                                status_text.text(msg),
+                            ),
+                        )
+
                     progress_bar.progress(1.0)
                     status_text.empty()
-                    
-                    # Success message
-                    drive_link = result.get('drive_url', 'N/A')
-                    file_size_mb = result.get('file_size', 0) / (1024 * 1024)
-                    
+
+                    partial_errors = []
+                    successful_results = []
+                    for item in batch_results:
+                        if item.get("partial_errors"):
+                            partial_errors.extend(item["partial_errors"])
+                        else:
+                            successful_results.append(item)
+
                     st.markdown(f"""
                     <div class="success-box">
                         <h3>✅ Success!</h3>
-                        <p><strong>File processed and uploaded successfully!</strong></p>
-                        <p>📁 Location: {result['output_path']}</p>
-                        <p>📄 File: {uploaded_file.name} ({file_size_mb:.2f} MB)</p>
-                        <p>⏱️ Processing time: {result['processing_time']:.1f}s</p>
-                        <p>🔗 <a href="{drive_link}" target="_blank">👉 Click here to view file in Google Drive</a></p>
+                        <p><strong>{len(successful_results)} of {len(uploaded_files)} file(s) processed and uploaded.</strong></p>
                     </div>
                     """, unsafe_allow_html=True)
-                    
-                    # Also show as a button for better visibility
-                    if drive_link != 'N/A':
-                        st.link_button("🔗 Open File in Google Drive", drive_link)
-                    
-                    st.balloons()
-                    
-                    # Increment counter to reset file uploader for next upload
+
+                    for result in successful_results:
+                        drive_link = result.get('drive_url', 'N/A')
+                        file_size_mb = result.get('file_size', 0) / (1024 * 1024)
+                        st.markdown(
+                            f"- **{result['file_name']}** — "
+                            f"{file_size_mb:.2f} MB, {result['processing_time']:.1f}s"
+                        )
+                        st.caption(f"📁 {result['output_path']}")
+                        if drive_link != 'N/A':
+                            st.link_button(
+                                f"🔗 Open {result['file_name']} in Drive",
+                                drive_link,
+                                key=f"drive_link_{result['file_id']}",
+                            )
+
+                    if partial_errors:
+                        st.warning(
+                            f"⚠️ {len(partial_errors)} file(s) failed. "
+                            f"{len(successful_results)} succeeded."
+                        )
+                        with st.expander("Failed files"):
+                            for item in partial_errors:
+                                st.write(f"- **{item['file_name']}**: {item['error']}")
+
+                    if successful_results:
+                        st.balloons()
+
                     st.session_state.upload_counter += 1
-                    
-                    # Show ready message for next upload
-                    st.info("✨ Ready for next file! Upload another PDF to process.")
-                    
+                    st.info("✨ Ready for the next batch! Upload more PDFs to process.")
+
                 except Exception as e:
                     st.markdown(f"""
                     <div class="error-box">
@@ -386,8 +438,7 @@ else:
                         <p>{str(e)}</p>
                     </div>
                     """, unsafe_allow_html=True)
-                    
-                    # Show error details in expander
+
                     with st.expander("🔍 Error Details"):
                         st.code(str(e))
 

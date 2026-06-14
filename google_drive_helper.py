@@ -24,11 +24,19 @@ try:
 except ImportError:
     HAS_STREAMLIT = False
 
-# Add parent directory to access webhook_system modules
-parent_dir = Path(__file__).parent.parent / "webhook_system"
-sys.path.insert(0, str(parent_dir))
+APP_DIR = Path(__file__).parent
 
 SCOPES = ['https://www.googleapis.com/auth/drive']
+
+
+def _find_credentials_file() -> Path:
+    """Locate Google OAuth client secrets in the app directory."""
+    credentials_path = APP_DIR / "credentials.json"
+    if credentials_path.exists():
+        return credentials_path
+    for path in sorted(APP_DIR.glob("client_secret*.json")):
+        return path
+    return credentials_path
 
 # Configuration (same as webhook system)
 # Try to get from Streamlit secrets first, then environment, then default
@@ -65,10 +73,8 @@ class DriveManager:
         
         # Detect if running on Streamlit Cloud
         import os
-        is_streamlit_cloud = (
-            os.getenv('STREAMLIT_SHARING_MODE') or 
-            os.getenv('STREAMLIT_SERVER_PORT') or
-            not Path(__file__).parent.parent.joinpath("webhook_system").exists()
+        is_streamlit_cloud = bool(
+            os.getenv('STREAMLIT_SHARING_MODE') or os.getenv('STREAMLIT_SERVER_PORT')
         )
         
         # Check if running on Streamlit Cloud with secrets
@@ -190,8 +196,8 @@ class DriveManager:
                 "Please add your Google Drive credentials to Streamlit Cloud secrets."
             )
         
-        token_path = Path(__file__).parent.parent / "webhook_system" / "token.pickle"
-        credentials_path = Path(__file__).parent.parent / "webhook_system" / "credentials.json"
+        token_path = APP_DIR / "token.pickle"
+        credentials_path = _find_credentials_file()
         
         # Load existing token
         if token_path.exists():
@@ -205,8 +211,8 @@ class DriveManager:
             else:
                 if not credentials_path.exists():
                     raise FileNotFoundError(
-                        f"credentials.json not found at {credentials_path}\n"
-                        "Please copy it from the webhook_system folder"
+                        f"Google credentials not found in {APP_DIR}\n"
+                        "Add credentials.json or client_secret*.json"
                     )
                 flow = InstalledAppFlow.from_client_secrets_file(
                     str(credentials_path), SCOPES
