@@ -195,6 +195,7 @@ def process_and_upload_pdf(
             # Build result
             result = {
                 'success': True,
+                'branding_name': branding_name,
                 'output_path': f"{destination['output_path_prefix']}/{uploaded_file.name}",
                 'file_id': uploaded_file_info['id'],
                 'file_name': uploaded_file_info['name'],
@@ -270,6 +271,90 @@ def process_and_upload_pdfs(
     if errors and not results:
         failed_names = ", ".join(item["file_name"] for item in errors)
         raise Exception(f"All uploads failed: {failed_names}")
+
+    if errors:
+        results.append({"partial_errors": errors})
+
+    return results
+
+
+def process_and_upload_pdfs_multi_branding(
+    uploaded_files: List[Any],
+    project_name: str,
+    project_id: str,
+    brandings: List[Dict[str, str]],
+    file_type: str,
+    drive_manager,
+    include_footer: bool = True,
+    progress_callback: Optional[Callable] = None,
+) -> List[Dict]:
+    """Process and upload PDFs to multiple branding folders."""
+    if not uploaded_files:
+        return []
+    if not brandings:
+        raise Exception("No brandings selected")
+
+    total_brandings = len(brandings)
+    total_files = len(uploaded_files)
+    total_jobs = total_brandings * total_files
+    results: List[Dict] = []
+    errors: List[Dict] = []
+    job_index = 0
+
+    for branding_index, branding in enumerate(brandings, start=1):
+        branding_name = branding["name"]
+        branding_id = branding["id"]
+
+        destination = resolve_upload_destination(
+            drive_manager,
+            project_name,
+            branding_name,
+            file_type,
+        )
+
+        for file_index, uploaded_file in enumerate(uploaded_files, start=1):
+            job_index += 1
+            file_label = (
+                f"[{job_index}/{total_jobs}] {branding_name} — "
+                f"{uploaded_file.name}"
+            )
+
+            def file_progress(
+                progress: float,
+                message: str,
+                idx=job_index,
+                label=file_label,
+            ):
+                if progress_callback:
+                    overall = ((idx - 1) + progress) / total_jobs
+                    progress_callback(overall, f"{label}: {message}")
+
+            try:
+                result = process_and_upload_pdf(
+                    uploaded_file=uploaded_file,
+                    project_name=project_name,
+                    project_id=project_id,
+                    branding_name=branding_name,
+                    branding_id=branding_id,
+                    file_type=file_type,
+                    drive_manager=drive_manager,
+                    include_footer=include_footer,
+                    progress_callback=file_progress,
+                    destination=destination,
+                )
+                results.append(result)
+            except Exception as error:
+                errors.append({
+                    "file_name": uploaded_file.name,
+                    "branding_name": branding_name,
+                    "error": str(error),
+                })
+
+    if errors and not results:
+        failed = ", ".join(
+            f"{item['branding_name']}/{item['file_name']}" for item in errors
+        )
+        raise Exception(f"All uploads failed: {failed}")
 
     if errors:
         results.append({"partial_errors": errors})

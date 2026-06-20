@@ -7,7 +7,11 @@ import streamlit as st
 from pathlib import Path
 
 from google_drive_helper import DriveManager
-from pdf_processor import process_and_upload_pdf, process_and_upload_pdfs
+from pdf_processor import (
+    process_and_upload_pdf,
+    process_and_upload_pdfs,
+    process_and_upload_pdfs_multi_branding,
+)
 
 MAX_PDF_FILES = 50
 MAX_FILE_SIZE_MB = 500
@@ -164,10 +168,10 @@ with st.sidebar:
     st.header("ℹ️ About")
     st.markdown(f"""
     **How it works:**
-    1. Select project & branding
+    1. Select project & branding(s)
     2. Choose file type
     3. Upload up to **{MAX_PDF_FILES} PDFs** at once
-    4. Watch them process
+    4. Watch them process (each PDF × each branding)
     5. Done! ✨
     
     **Limits:** {MAX_PDF_FILES} files per batch, {MAX_FILE_SIZE_MB} MB each.
@@ -242,40 +246,80 @@ else:
         
         st.divider()
         
-        # Step 2: Select Branding
+        # Step 2: Select Branding(s)
         st.header("2️⃣ Select Branding")
+        st.caption("Select one or more companies — each PDF is processed and uploaded to every selected branding folder.")
         
         brandings = st.session_state.drive_manager.get_brandings(selected_project['id'])
         branding_names = [b['name'] for b in brandings]
         
-        selected_branding_name = st.selectbox(
-            "Select branding",
+        selected_branding_names = st.multiselect(
+            "Select branding(s)",
             options=branding_names,
-            label_visibility="collapsed"
+            default=branding_names[:1] if branding_names else [],
+            label_visibility="collapsed",
         )
         
-        selected_branding = next(b for b in brandings if b['name'] == selected_branding_name)
+        selected_brandings = [
+            b for b in brandings if b['name'] in selected_branding_names
+        ]
+        
+        if selected_brandings:
+            st.info(
+                f"✅ **{len(selected_brandings)}** branding(s) selected: "
+                f"{', '.join(selected_branding_names)}"
+            )
+        else:
+            st.warning("⚠️ Select at least one branding to continue.")
         
         st.divider()
         
         # Step 3: Select File Type
         st.header("3️⃣ Select File Type")
         
-        # Get actual file types from Raw folder in Drive
-        with st.spinner("📂 Loading file types from Drive..."):
-            file_types = st.session_state.drive_manager.get_file_types_from_raw_folder(selected_branding['id'])
-        
-        if not file_types:
-            st.warning("⚠️ No file type folders found in Raw folder. Please ensure the Raw folder exists with subfolders.")
-            st.info("💡 Tip: The Raw folder should contain subfolders like 'Floor Plans', 'Renderings', etc.")
-            selected_type = None
+        selected_type = None
+        if not selected_brandings:
+            st.warning("⚠️ Select branding(s) in Step 2 first.")
         else:
-            selected_type = st.selectbox(
-                "Select file type",
-                options=file_types,
-                label_visibility="collapsed"
-            )
-            st.info(f"✅ Found {len(file_types)} file type(s) in Raw folder")
+            with st.spinner("📂 Loading file types from Drive..."):
+                branding_file_types = {}
+                for branding in selected_brandings:
+                    branding_file_types[branding['name']] = (
+                        st.session_state.drive_manager.get_file_types_from_raw_folder(
+                            branding['id']
+                        )
+                    )
+
+            all_file_types = sorted({
+                file_type
+                for types in branding_file_types.values()
+                for file_type in types
+            })
+
+            if not all_file_types:
+                st.warning("⚠️ No file type folders found in Raw folder. Please ensure the Raw folder exists with subfolders.")
+                st.info("💡 Tip: The Raw folder should contain subfolders like 'Floor Plans', 'Price List', etc.")
+            else:
+                selected_type = st.selectbox(
+                    "Select file type",
+                    options=all_file_types,
+                    label_visibility="collapsed"
+                )
+
+                missing_for = [
+                    name
+                    for name, types in branding_file_types.items()
+                    if selected_type not in types
+                ]
+                if missing_for:
+                    st.warning(
+                        f"⚠️ **{selected_type}** is not in the Raw folder for: "
+                        f"{', '.join(missing_for)}. Upload will still create the output folder if needed."
+                    )
+                else:
+                    st.success(
+                        f"✅ **{selected_type}** found in all {len(selected_brandings)} selected branding(s)"
+                    )
         
         st.divider()
         
@@ -331,16 +375,28 @@ else:
                     file_size_mb = uploaded_file.size / (1024 * 1024)
                     st.write(f"- {uploaded_file.name} ({file_size_mb:.2f} MB)")
 
-            # Check if file type is selected
+            # Check prerequisites
+            if not selected_brandings:
+                st.error("❌ Please select at least one branding (Step 2)")
+                st.stop()
             if not selected_type:
                 st.error("❌ Please select a file type first (Step 3)")
                 st.stop()
 
-            button_label = (
-                "🚀 Process PDF"
-                if len(uploaded_files) == 1
-                else f"🚀 Process {len(uploaded_files)} PDFs"
-            )
+            total_jobs = len(uploaded_files) * len(selected_brandings)
+            if len(selected_brandings) == 1 and len(uploaded_files) == 1:
+                button_label = "🚀 Process PDF"
+            elif len(selected_brandings) == 1:
+                button_label = f"🚀 Process {len(uploaded_files)} PDFs"
+            elif len(uploaded_files) == 1:
+                button_label = (
+                    f"🚀 Process 1 PDF × {len(selected_brandings)} brandings"
+                )
+            else:
+                button_label = (
+                    f"🚀 Process {len(uploaded_files)} PDFs × "
+                    f"{len(selected_brandings)} brandings ({total_jobs} uploads)"
+                )
 
             # Process button
             if st.button(button_label, type="primary", use_container_width=True):
@@ -349,31 +405,48 @@ else:
                     status_text = st.empty()
 
                     footer_msg = "watermark + footer" if include_footer else "watermark only"
-                    status_text.text(f"🎨 Processing {len(uploaded_files)} PDF(s) ({footer_msg})...")
+                    status_text.text(
+                        f"🎨 Processing {total_jobs} job(s) ({footer_msg})..."
+                    )
 
-                    if len(uploaded_files) == 1:
-                        result = process_and_upload_pdf(
-                            uploaded_file=uploaded_files[0],
-                            project_name=selected_project['name'],
-                            project_id=selected_project['id'],
-                            branding_name=selected_branding_name,
-                            branding_id=selected_branding['id'],
-                            file_type=selected_type,
-                            drive_manager=st.session_state.drive_manager,
-                            include_footer=include_footer,
-                            progress_callback=lambda p, msg: (
-                                progress_bar.progress(p),
-                                status_text.text(msg),
-                            ),
-                        )
-                        batch_results = [result]
+                    if len(selected_brandings) == 1:
+                        if len(uploaded_files) == 1:
+                            result = process_and_upload_pdf(
+                                uploaded_file=uploaded_files[0],
+                                project_name=selected_project['name'],
+                                project_id=selected_project['id'],
+                                branding_name=selected_brandings[0]['name'],
+                                branding_id=selected_brandings[0]['id'],
+                                file_type=selected_type,
+                                drive_manager=st.session_state.drive_manager,
+                                include_footer=include_footer,
+                                progress_callback=lambda p, msg: (
+                                    progress_bar.progress(p),
+                                    status_text.text(msg),
+                                ),
+                            )
+                            batch_results = [result]
+                        else:
+                            batch_results = process_and_upload_pdfs(
+                                uploaded_files=uploaded_files,
+                                project_name=selected_project['name'],
+                                project_id=selected_project['id'],
+                                branding_name=selected_brandings[0]['name'],
+                                branding_id=selected_brandings[0]['id'],
+                                file_type=selected_type,
+                                drive_manager=st.session_state.drive_manager,
+                                include_footer=include_footer,
+                                progress_callback=lambda p, msg: (
+                                    progress_bar.progress(p),
+                                    status_text.text(msg),
+                                ),
+                            )
                     else:
-                        batch_results = process_and_upload_pdfs(
+                        batch_results = process_and_upload_pdfs_multi_branding(
                             uploaded_files=uploaded_files,
                             project_name=selected_project['name'],
                             project_id=selected_project['id'],
-                            branding_name=selected_branding_name,
-                            branding_id=selected_branding['id'],
+                            brandings=selected_brandings,
                             file_type=selected_type,
                             drive_manager=st.session_state.drive_manager,
                             include_footer=include_footer,
@@ -397,33 +470,45 @@ else:
                     st.markdown(f"""
                     <div class="success-box">
                         <h3>✅ Success!</h3>
-                        <p><strong>{len(successful_results)} of {len(uploaded_files)} file(s) processed and uploaded.</strong></p>
+                        <p><strong>{len(successful_results)} of {total_jobs} upload(s) completed.</strong></p>
                     </div>
                     """, unsafe_allow_html=True)
 
                     for result in successful_results:
                         drive_link = result.get('drive_url', 'N/A')
                         file_size_mb = result.get('file_size', 0) / (1024 * 1024)
+                        branding_label = result.get('branding_name', '')
+                        title = (
+                            f"**{branding_label}** — {result['file_name']}"
+                            if branding_label
+                            else f"**{result['file_name']}**"
+                        )
                         st.markdown(
-                            f"- **{result['file_name']}** — "
+                            f"- {title} — "
                             f"{file_size_mb:.2f} MB, {result['processing_time']:.1f}s"
                         )
                         st.caption(f"📁 {result['output_path']}")
                         if drive_link != 'N/A':
                             st.link_button(
-                                f"🔗 Open {result['file_name']} in Drive",
+                                f"🔗 Open in Drive",
                                 drive_link,
-                                key=f"drive_link_{result['file_id']}",
+                                key=f"drive_link_{result['file_id']}_{branding_label}",
                             )
 
                     if partial_errors:
                         st.warning(
-                            f"⚠️ {len(partial_errors)} file(s) failed. "
+                            f"⚠️ {len(partial_errors)} upload(s) failed. "
                             f"{len(successful_results)} succeeded."
                         )
-                        with st.expander("Failed files"):
+                        with st.expander("Failed uploads"):
                             for item in partial_errors:
-                                st.write(f"- **{item['file_name']}**: {item['error']}")
+                                branding = item.get('branding_name', '')
+                                label = (
+                                    f"**{branding}** / **{item['file_name']}**"
+                                    if branding
+                                    else f"**{item['file_name']}**"
+                                )
+                                st.write(f"- {label}: {item['error']}")
 
                     if successful_results:
                         st.balloons()
