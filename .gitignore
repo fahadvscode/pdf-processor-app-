@@ -3,6 +3,8 @@
 streamlit_secrets.txt
 token.pickle
 credentials.json
+.env
+client_secret*.json
 
 # Python
 __pycache__/

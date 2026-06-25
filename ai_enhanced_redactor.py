@@ -45,9 +45,22 @@ except ImportError as e:
     print(f"YOLO detector not available: {e}")
     YOLO_DETECTOR_AVAILABLE = False
 
-# DeepSeek API Configuration
-DEEPSEEK_API_KEY = "sk-a72814c0cb7c4d1480d19f0d2dc42a68"
+# DeepSeek API Configuration (set DEEPSEEK_API_KEY env var or Streamlit secret — never commit keys)
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+
+
+def _get_deepseek_api_key() -> Optional[str]:
+    """Load DeepSeek API key from environment or Streamlit secrets."""
+    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and "DEEPSEEK_API_KEY" in st.secrets:
+            return str(st.secrets["DEEPSEEK_API_KEY"]).strip()
+    except Exception:
+        pass
+    return None
 
 # Google Drive settings (inherited from existing system)
 SCOPES = [
@@ -171,10 +184,16 @@ Coordinates must be in pixels relative to the image dimensions. Be precise and t
 
 class AIEnhancedRedactor:
     def __init__(self):
-        self.deepseek_headers = {
-            'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
-            'Content-Type': 'application/json'
-        }
+        api_key = _get_deepseek_api_key()
+        self.deepseek_enabled = bool(api_key)
+        self.deepseek_headers = None
+        if api_key:
+            self.deepseek_headers = {
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            }
+        else:
+            logger.info("DeepSeek API key not configured — AI vision calls disabled")
         self.logo_templates = self._load_logo_templates()
         
         # Initialize YOLO detector if available
@@ -198,7 +217,7 @@ class AIEnhancedRedactor:
     def analyze_page_with_ai(self, page_image_bytes: bytes) -> Dict[str, Any]:
         """
         Send page image to DeepSeek API for AI-powered vision analysis.
-        Falls back to enhanced local analysis if API fails.
+        Falls back to enhanced local analysis if API fails or key is not set.
         
         Args:
             page_image_bytes: PNG image bytes of the PDF page
@@ -206,6 +225,10 @@ class AIEnhancedRedactor:
         Returns:
             Dictionary containing redaction zones and analysis
         """
+        if not self.deepseek_enabled or not self.deepseek_headers:
+            logger.info("DeepSeek disabled — using computer vision fallback")
+            return self._enhanced_computer_vision_analysis(page_image_bytes)
+
         try:
             # Convert image to base64
             image_b64 = self.image_to_base64(page_image_bytes)
