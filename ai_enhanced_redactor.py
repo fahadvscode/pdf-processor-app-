@@ -106,14 +106,16 @@ LOGO_MAX_SIZE = (500, 500)  # Maximum logo size to detect
 # Polling interval (seconds) for continuous mode
 POLLING_INTERVAL_SECONDS = 5
 
-# Configure logging
+# Configure logging (file handler is optional — Streamlit Cloud may be read-only)
+_log_handlers = [logging.StreamHandler(sys.stdout)]
+try:
+    _log_handlers.insert(0, logging.FileHandler("pdf_redaction_log.txt"))
+except OSError:
+    pass
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("pdf_redaction_log.txt"),
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=_log_handlers,
 )
 
 logger = logging.getLogger("ai_enhanced_redactor")

@@ -118,6 +118,45 @@ if 'projects' not in st.session_state:
     st.session_state.projects = None
 if 'upload_counter' not in st.session_state:
     st.session_state.upload_counter = 0
+if 'brandings_cache' not in st.session_state:
+    st.session_state.brandings_cache = {}
+if 'file_types_cache' not in st.session_state:
+    st.session_state.file_types_cache = {}
+
+
+def get_cached_brandings(project_id: str):
+    """Load branding folders once per project per session."""
+    cache = st.session_state.brandings_cache
+    if project_id not in cache:
+        cache[project_id] = st.session_state.drive_manager.get_brandings(project_id)
+    return cache[project_id]
+
+
+def get_cached_file_types(branding_id: str):
+    """Load Raw file-type folders once per branding per session."""
+    cache = st.session_state.file_types_cache
+    if branding_id not in cache:
+        cache[branding_id] = st.session_state.drive_manager.get_file_types_from_raw_folder(
+            branding_id
+        )
+    return cache[branding_id]
+
+
+def branding_option_labels(brandings):
+    """Unique labels so Streamlit's multiselect does not crash on duplicate names."""
+    name_counts = {}
+    for branding in brandings:
+        name = branding['name']
+        name_counts[name] = name_counts.get(name, 0) + 1
+    labels = []
+    for branding in brandings:
+        name = branding['name']
+        if name_counts[name] > 1:
+            labels.append(f"{name} ({branding['id'][:8]})")
+        else:
+            labels.append(name)
+    return labels
+
 
 def initialize_drive():
     """Initialize Google Drive connection"""
@@ -154,6 +193,8 @@ with st.sidebar:
         if st.button("Refresh Projects"):
             with st.spinner("📂 Refreshing projects list (loading all 3000+ projects)..."):
                 st.session_state.projects = st.session_state.drive_manager.get_all_projects()
+            st.session_state.brandings_cache = {}
+            st.session_state.file_types_cache = {}
             st.success(f"✅ Refreshed! Now showing {len(st.session_state.projects)} projects")
             st.rerun()
     
@@ -250,20 +291,26 @@ else:
         st.header("2️⃣ Select Branding")
         st.caption("Select one or more companies — each PDF is processed and uploaded to every selected branding folder.")
         
-        brandings = st.session_state.drive_manager.get_brandings(selected_project['id'])
-        branding_names = [b['name'] for b in brandings]
-        
+        brandings = get_cached_brandings(selected_project['id'])
+        branding_labels = branding_option_labels(brandings)
+        label_to_branding = {
+            label: branding for label, branding in zip(branding_labels, brandings)
+        }
+
         selected_branding_names = st.multiselect(
             "Select branding(s)",
-            options=branding_names,
-            default=branding_names[:1] if branding_names else [],
+            options=branding_labels,
+            default=branding_labels,
+            key=f"brandings_{selected_project['id']}",
             label_visibility="collapsed",
         )
-        
+
         selected_brandings = [
-            b for b in brandings if b['name'] in selected_branding_names
+            label_to_branding[name]
+            for name in selected_branding_names
+            if name in label_to_branding
         ]
-        
+
         if selected_brandings:
             st.info(
                 f"✅ **{len(selected_brandings)}** branding(s) selected: "
@@ -284,10 +331,8 @@ else:
             with st.spinner("📂 Loading file types from Drive..."):
                 branding_file_types = {}
                 for branding in selected_brandings:
-                    branding_file_types[branding['name']] = (
-                        st.session_state.drive_manager.get_file_types_from_raw_folder(
-                            branding['id']
-                        )
+                    branding_file_types[branding['name']] = get_cached_file_types(
+                        branding['id']
                     )
 
             all_file_types = sorted({

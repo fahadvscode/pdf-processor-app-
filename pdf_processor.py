@@ -13,18 +13,22 @@ from typing import Dict, Callable, Optional, List, Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Import existing PDF processing function
-try:
-    from ai_enhanced_redactor import process_pdf_enhanced
-    print("✅ AI redaction module loaded successfully")
-except ImportError as e:
-    print(f"⚠️  Warning: Could not import ai_enhanced_redactor: {e}")
-    # Fallback if module structure is different
-    def process_pdf_enhanced(input_path, output_path, project_folder_path):
-        """Fallback PDF processor - just copies file"""
+
+def process_pdf_enhanced(input_path, output_path, project_folder_path, include_footer=True):
+    """Lazy-load the redactor so Streamlit startup does not import OpenCV/PyMuPDF."""
+    try:
+        from ai_enhanced_redactor import process_pdf_enhanced as _process_pdf_enhanced
+    except ImportError as e:
         import shutil
         shutil.copy(input_path, output_path)
-        print(f"⚠️  Warning: Using fallback processor (copied file without processing)")
+        print(f"⚠️  Warning: Could not import ai_enhanced_redactor ({e}); copied file without processing")
+        return
+    return _process_pdf_enhanced(
+        input_path=input_path,
+        output_path=output_path,
+        project_folder_path=project_folder_path,
+        include_footer=include_footer,
+    )
 
 
 def resolve_upload_destination(
