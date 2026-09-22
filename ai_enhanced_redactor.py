@@ -81,7 +81,7 @@ DEFAULT_WATERMARK_TEXT = 'Precon Factory\n(647) 956-4063'
 DEFAULT_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/footer/footer%20precon%20factory.png'
 
 # Fahad Javed branding configuration
-FAHAD_WATERMARK_TEXT = 'Fahad Javed\n2895369724'
+FAHAD_WATERMARK_TEXT = 'Fahad Javed\n289.536.9724'
 FAHAD_FOOTER_IMAGE_URL = 'https://images.preconfactory.com/storage/v1/object/public/rental-documents/1790030570491_0_new_footer_fj.png'
 
 # GTA Lowrise branding configuration
