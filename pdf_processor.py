@@ -150,7 +150,10 @@ def process_and_upload_pdf(
             output_path = os.path.join(temp_dir, f"processed_{uploaded_file.name}")
             
             footer_msg = "watermark + footer" if include_footer else "watermark only"
-            update_progress(0.3, f"🎨 Processing PDF ({footer_msg})...")
+            update_progress(
+                0.3,
+                f"🎨 Processing PDF for {branding_name} ({footer_msg})...",
+            )
             
             try:
                 # Use existing AI processing

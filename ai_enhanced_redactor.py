@@ -83,6 +83,7 @@ DEFAULT_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/
 # Fahad Javed branding configuration
 FAHAD_WATERMARK_TEXT = 'Fahad Javed\n289.536.9724'
 FAHAD_FOOTER_IMAGE_URL = 'https://images.preconfactory.com/storage/v1/object/public/rental-documents/1790030570491_0_new_footer_fj.png'
+FAHAD_FOOTER_LOCAL_PATH = Path(__file__).resolve().parent / 'assets' / 'fahad_javed_footer.png'
 
 # GTA Lowrise branding configuration
 GTA_LOWRISE_WATERMARK_TEXT = 'GTA Lowrise\n416.399.4289'
@@ -1157,6 +1158,22 @@ COMPILED_PATTERNS = {
     for category, patterns in REDACTION_PATTERNS.items()
 }
 
+def _normalize_branding_text(text: str) -> str:
+    return ''.join(ch.lower() for ch in (text or '') if ch.isalnum())
+
+
+def _is_fahad_javed_branding(project_folder_path: str) -> bool:
+    """Match Fahad Javed even when the Drive folder is FJ, Fahad, etc."""
+    branding_name = (project_folder_path or '').split('/')[0]
+    lower = branding_name.lower()
+    compact = _normalize_branding_text(branding_name)
+    if 'fahad' in lower or 'fahadsold' in compact:
+        return True
+    if compact == 'fj' or compact.startswith('fj'):
+        return True
+    return False
+
+
 def _get_branding_config(project_folder_path: str) -> Tuple[str, str]:
     """
     Determine watermark text and footer URL based on project folder.
@@ -1176,8 +1193,12 @@ def _get_branding_config(project_folder_path: str) -> Tuple[str, str]:
         return GTA_LOWRISE_WATERMARK_TEXT, GTA_LOWRISE_FOOTER_IMAGE_URL
     
     # Check if this is a Fahad Javed project
-    if 'fahad' in folder_path_lower and 'javed' in folder_path_lower:
-        logger.info("Using Fahad Javed branding for project folder")
+    if _is_fahad_javed_branding(project_folder_path):
+        logger.info(
+            "Using Fahad Javed branding (watermark %r, footer %s)",
+            FAHAD_WATERMARK_TEXT,
+            FAHAD_FOOTER_IMAGE_URL,
+        )
         return FAHAD_WATERMARK_TEXT, FAHAD_FOOTER_IMAGE_URL
     
     # Default to Precon Factory branding
@@ -1186,12 +1207,28 @@ def _get_branding_config(project_folder_path: str) -> Tuple[str, str]:
 
 def _download_image_bytes(url: str) -> Optional[bytes]:
     try:
-        resp = requests.get(url, timeout=20)
+        resp = requests.get(
+            url,
+            timeout=20,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (compatible; PDFProcessor/1.0)',
+                'Accept': 'image/png,image/*,*/*;q=0.8',
+                'Cache-Control': 'no-cache',
+            },
+        )
         resp.raise_for_status()
         return resp.content
     except Exception as e:
         logger.error(f"Failed to download image from {url}: {e}")
         return None
+
+
+def _load_footer_bytes(watermark_text: str, footer_image_url: str) -> Optional[bytes]:
+    """Prefer the bundled Fahad Javed footer so Cloud does not depend on the CDN."""
+    if watermark_text == FAHAD_WATERMARK_TEXT and FAHAD_FOOTER_LOCAL_PATH.exists():
+        logger.info("Loading Fahad Javed footer from %s", FAHAD_FOOTER_LOCAL_PATH)
+        return FAHAD_FOOTER_LOCAL_PATH.read_bytes()
+    return _download_image_bytes(footer_image_url)
 
 
 def _watermark_script_dir() -> Path:
@@ -1306,6 +1343,8 @@ def _insert_footer_image(page: fitz.Page, footer_png: Optional[bytes]) -> None:
         y1 = page_h
         y0 = y1 - target_h
         rect = fitz.Rect(x0, y0, x0 + target_w, y1)
+        # Cover any previous footer/phone strip before placing the new banner.
+        page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
         page.insert_image(rect, stream=footer_png, keep_proportion=True, overlay=True)
     except Exception as e:
         logger.warning(f"Failed to insert footer image: {e}")
@@ -1327,7 +1366,9 @@ def ai_enhanced_redact_pdf(input_path: str, output_path: str, project_folder_pat
     """
     # Determine branding based on project folder
     watermark_text, footer_image_url = _get_branding_config(project_folder_path)
-    footer_png = _download_image_bytes(footer_image_url)
+    footer_png = _load_footer_bytes(watermark_text, footer_image_url)
+    if include_footer and not footer_png:
+        logger.error("Footer image could not be loaded; PDF would keep any old footer")
     
     doc = fitz.open(input_path)
     total_redactions = 0

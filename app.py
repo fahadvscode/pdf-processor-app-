@@ -576,7 +576,7 @@ else:
 st.divider()
 st.markdown("""
 <div style="text-align: center; color: #666; font-size: 0.9rem;">
-    PDF Processor v2.0 - Web Interface | No webhooks, no complexity, just works ✨
+    PDF Processor v2.1 - Fahad Javed 289.536.9724 | No webhooks, no complexity, just works ✨
 </div>
 """, unsafe_allow_html=True)
 
