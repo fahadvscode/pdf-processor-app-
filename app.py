@@ -116,7 +116,7 @@ st.markdown("""
 if 'drive_manager' not in st.session_state:
     st.session_state.drive_manager = None
 if 'projects' not in st.session_state:
-    st.session_state.projects = None
+    st.session_state.projects = []
 if 'upload_counter' not in st.session_state:
     st.session_state.upload_counter = 0
 if 'brandings_cache' not in st.session_state:
@@ -125,6 +125,35 @@ if 'file_types_cache' not in st.session_state:
     st.session_state.file_types_cache = {}
 if 'existing_files_cache' not in st.session_state:
     st.session_state.existing_files_cache = {}
+
+
+def _normalize_project(project):
+    """Keep only Drive folders that have an id; fill in a name if Drive omitted it."""
+    if not isinstance(project, dict):
+        return None
+    project_id = project.get('id')
+    if not project_id:
+        return None
+    name = project.get('name') or project.get('title')
+    if not name:
+        name = f"Unnamed ({str(project_id)[:8]})"
+    return {'id': project_id, 'name': name}
+
+
+def get_project_list():
+    """Always return a list of {id, name} project dicts."""
+    raw = st.session_state.get('projects')
+    if isinstance(raw, dict):
+        raw = raw.get('files') or raw.get('projects') or []
+    if not isinstance(raw, list):
+        return []
+    normalized = []
+    for project in raw:
+        item = _normalize_project(project)
+        if item:
+            normalized.append(item)
+    st.session_state.projects = normalized
+    return normalized
 
 
 def _normalize_branding(branding):
@@ -161,7 +190,11 @@ def get_cached_file_types(branding_id: str):
         cache[branding_id] = st.session_state.drive_manager.get_file_types_from_raw_folder(
             branding_id
         )
-    return cache[branding_id]
+    file_types = cache.get(branding_id)
+    if not isinstance(file_types, list):
+        file_types = []
+    cache[branding_id] = file_types
+    return file_types
 
 
 def branding_option_labels(brandings):
@@ -185,18 +218,25 @@ def initialize_drive():
     """Initialize Google Drive connection"""
     try:
         with st.spinner("🔌 Connecting to Google Drive..."):
-            st.session_state.drive_manager = DriveManager()
-        
+            manager = DriveManager()
+
         # Load all projects with progress indicator
         progress_placeholder = st.empty()
         progress_placeholder.info("📂 Loading all projects (this may take a few seconds for 3000+ projects)...")
-        
-        st.session_state.projects = st.session_state.drive_manager.get_all_projects()
-        
+
+        projects = manager.get_all_projects()
+        st.session_state.drive_manager = manager
+        st.session_state.projects = [
+            item for item in (_normalize_project(project) for project in projects)
+            if item
+        ]
+
         progress_placeholder.success(f"✅ Loaded {len(st.session_state.projects)} projects!")
-        
+
         return True
     except Exception as e:
+        st.session_state.drive_manager = None
+        st.session_state.projects = []
         st.error(f"❌ Failed to connect to Google Drive: {e}")
         return False
 
@@ -215,7 +255,11 @@ with st.sidebar:
         st.success("✅ Connected to Google Drive")
         if st.button("Refresh Projects"):
             with st.spinner("📂 Refreshing projects list (loading all 3000+ projects)..."):
-                st.session_state.projects = st.session_state.drive_manager.get_all_projects()
+                projects = st.session_state.drive_manager.get_all_projects()
+                st.session_state.projects = [
+                    item for item in (_normalize_project(project) for project in projects)
+                    if item
+                ]
             st.session_state.brandings_cache = {}
             st.session_state.file_types_cache = {}
             st.session_state.existing_files_cache = {}
@@ -225,8 +269,9 @@ with st.sidebar:
     st.divider()
     
     st.header("📊 Stats")
-    if st.session_state.projects:
-        st.metric("Projects Available", len(st.session_state.projects))
+    project_count = len(get_project_list())
+    if project_count:
+        st.metric("Projects Available", project_count)
     
     st.divider()
     
@@ -267,10 +312,15 @@ else:
     search_query = st.text_input("🔍 Search project by name or ID", placeholder="Type to search...")
     
     # Filter projects based on search
-    filtered_projects = st.session_state.projects
+    projects = get_project_list()
+    filtered_projects = projects
     if search_query:
-        filtered_projects = [p for p in st.session_state.projects 
-                           if search_query.lower() in p['name'].lower()]
+        query = search_query.lower()
+        filtered_projects = [
+            p for p in projects
+            if query in (p.get('name') or '').lower()
+            or query in (p.get('id') or '').lower()
+        ]
     
     if not filtered_projects:
         st.warning("No projects found matching your search")
@@ -282,16 +332,19 @@ else:
         # Check for duplicate names and show IDs if needed
         name_counts = {}
         for p in filtered_projects:
-            name = p['name']
+            name = p.get('name') or f"Unnamed ({str(p.get('id', ''))[:8]})"
             name_counts[name] = name_counts.get(name, 0) + 1
         
         has_duplicates = any(count > 1 for count in name_counts.values())
         
         # Create display options (show ID if duplicates exist)
         if has_duplicates:
-            project_options = [f"{p['name']} (ID: {p['id'][:8]}...)" for p in filtered_projects]
+            project_options = [
+                f"{p.get('name') or 'Unnamed'} (ID: {str(p.get('id', ''))[:8]}...)"
+                for p in filtered_projects
+            ]
         else:
-            project_options = [p['name'] for p in filtered_projects]
+            project_options = [p.get('name') or f"Unnamed ({str(p.get('id', ''))[:8]})" for p in filtered_projects]
         
         # Project selector
         selected_option = st.selectbox(

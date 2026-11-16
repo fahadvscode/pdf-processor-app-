@@ -302,10 +302,14 @@ class DriveManager:
             seen_ids = set()
             unique_projects = []
             for project in all_projects:
-                project_id = project.get('id')
-                if project_id and project_id not in seen_ids:
-                    seen_ids.add(project_id)
-                    unique_projects.append(project)
+                project_id = project.get('id') if isinstance(project, dict) else None
+                if not project_id or project_id in seen_ids:
+                    continue
+                seen_ids.add(project_id)
+                unique_projects.append({
+                    'id': project_id,
+                    'name': project.get('name') or f"Unnamed ({project_id[:8]})",
+                })
             
             # Sort by name for consistent display
             unique_projects.sort(key=lambda x: x.get('name', '').lower())
