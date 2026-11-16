@@ -86,8 +86,9 @@ FAHAD_FOOTER_IMAGE_URL = 'https://images.preconfactory.com/storage/v1/object/pub
 FAHAD_FOOTER_LOCAL_PATH = Path(__file__).resolve().parent / 'assets' / 'fahad_javed_footer.png'
 
 # GTA Lowrise branding configuration
-GTA_LOWRISE_WATERMARK_TEXT = 'GTA Lowrise\n416.399.4289'
-GTA_LOWRISE_FOOTER_IMAGE_URL = 'https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/footer/footer%20gta%20lowrise.png'
+GTA_LOWRISE_WATERMARK_TEXT = 'GTA Lowrise\n2895369724'
+GTA_LOWRISE_FOOTER_IMAGE_URL = 'https://images.preconfactory.com/storage/v1/object/public/rental-documents/1794798498507_0_gta_lowrise_footer.png'
+GTA_LOWRISE_FOOTER_LOCAL_PATH = Path(__file__).resolve().parent / 'assets' / 'gta_lowrise_footer.png'
 
 # Common watermark settings
 WATERMARK_OPACITY = 0.30  # Light and subtle like a typical watermark
@@ -1224,10 +1225,13 @@ def _download_image_bytes(url: str) -> Optional[bytes]:
 
 
 def _load_footer_bytes(watermark_text: str, footer_image_url: str) -> Optional[bytes]:
-    """Prefer the bundled Fahad Javed footer so Cloud does not depend on the CDN."""
+    """Prefer bundled footers so Cloud does not depend on the CDN."""
     if watermark_text == FAHAD_WATERMARK_TEXT and FAHAD_FOOTER_LOCAL_PATH.exists():
         logger.info("Loading Fahad Javed footer from %s", FAHAD_FOOTER_LOCAL_PATH)
         return FAHAD_FOOTER_LOCAL_PATH.read_bytes()
+    if watermark_text == GTA_LOWRISE_WATERMARK_TEXT and GTA_LOWRISE_FOOTER_LOCAL_PATH.exists():
+        logger.info("Loading GTA Lowrise footer from %s", GTA_LOWRISE_FOOTER_LOCAL_PATH)
+        return GTA_LOWRISE_FOOTER_LOCAL_PATH.read_bytes()
     return _download_image_bytes(footer_image_url)
 
 
