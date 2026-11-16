@@ -1,13 +1,15 @@
-# Keep this list small. Torch/easyocr/CUDA wheels OOM and segfault on Streamlit Cloud.
-streamlit>=1.28.0,<1.64
+# Streamlit Cloud must use Python 3.12 (set in Advanced settings; runtime.txt is ignored).
+# Python 3.13 + numpy 2 + pyarrow/opencv aborts with "double free or corruption".
+streamlit>=1.40.0,<1.45.0
 google-api-python-client>=2.140.0
 google-auth-httplib2>=0.2.0
 google-auth-oauthlib>=1.2.0
 PyMuPDF>=1.24.10,<1.26.0
-Pillow>=10.3.0,<12.0.0
+Pillow>=10.3.0,<11.0.0
 opencv-python-headless>=4.8.0,<4.11.0
-numpy>=1.26.0,<2.3.0
+numpy>=1.26.0,<2.0.0
+protobuf>=4.25.3,<6
 requests>=2.31.0
 cairosvg>=2.7.0
 # Streamlit Cloud: pyarrow 25 segfaults (apache/arrow#50471)
-pyarrow>=14.0.0,<25
+pyarrow>=14.0.0,<18

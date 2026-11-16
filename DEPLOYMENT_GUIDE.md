@@ -44,6 +44,7 @@ git push
    - **Branch:** `main` (or your branch name)
    - **Main file path:** `streamlit_app/app.py` (or just `app.py` if in root)
    - **App URL:** Choose your subdomain (e.g., `pdf-processor`)
+   - **Advanced settings → Python version: 3.12** (required). Cloud ignores `runtime.txt`. Python 3.13 crashes this app with `double free or corruption`. To change Python after deploy, delete the app and redeploy.
 
 5. **Click "Deploy"**
 
