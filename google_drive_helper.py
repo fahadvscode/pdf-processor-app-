@@ -414,6 +414,51 @@ class DriveManager:
             return folder['id']
         except Exception as e:
             raise Exception(f"Failed to find/create folder {folder_name}: {e}")
+
+    def list_files_in_folder(self, folder_id: str) -> List[Dict]:
+        """List non-folder files currently in a Drive folder."""
+        files: List[Dict] = []
+        page_token = None
+        while True:
+            query_params = {
+                'q': (
+                    f"'{folder_id}' in parents and trashed=false "
+                    f"and mimeType!='application/vnd.google-apps.folder'"
+                ),
+                'fields': "nextPageToken, files(id, name, mimeType, size, modifiedTime)",
+                'pageSize': 1000,
+            }
+            if page_token:
+                query_params['pageToken'] = page_token
+
+            def list_files():
+                return self.drive_service.files().list(**query_params).execute()
+
+            results = self._execute_with_retries(list_files, "Failed to list files in folder")
+            files.extend(results.get('files', []))
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+        files.sort(key=lambda item: (item.get('name') or '').lower())
+        return files
+
+    def trash_files_in_folder(self, folder_id: str) -> List[str]:
+        """Move files in a folder to Drive trash. Subfolders are left alone."""
+        files = self.list_files_in_folder(folder_id)
+        deleted_names = []
+        for file_info in files:
+            file_id = file_info['id']
+            file_name = file_info.get('name', file_id)
+
+            def trash_file(fid=file_id):
+                return self.drive_service.files().update(
+                    fileId=fid,
+                    body={'trashed': True},
+                ).execute()
+
+            self._execute_with_retries(trash_file, f"Failed to remove '{file_name}'")
+            deleted_names.append(file_name)
+        return deleted_names
     
     def upload_file(self, local_path: str, file_name: str, folder_id: str) -> Dict:
         """Upload a file to Google Drive and verify it exists"""

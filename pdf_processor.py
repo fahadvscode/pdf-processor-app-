@@ -97,6 +97,63 @@ def resolve_upload_destination(
     }
 
 
+def inspect_output_folder(
+    drive_manager,
+    project_name: str,
+    branding_name: str,
+    file_type: str,
+) -> Dict[str, Any]:
+    """Look up an output folder and list files already in it."""
+    try:
+        destination = resolve_upload_destination(
+            drive_manager,
+            project_name,
+            branding_name,
+            file_type,
+        )
+        files = drive_manager.list_files_in_folder(destination["file_type_folder_id"])
+        return {
+            "ok": True,
+            "error": None,
+            "output_path": destination["output_path_prefix"],
+            "folder_id": destination["file_type_folder_id"],
+            "files": files,
+        }
+    except Exception as error:
+        return {
+            "ok": False,
+            "error": str(error),
+            "output_path": f"{project_name}/{branding_name}/.../{file_type}",
+            "folder_id": None,
+            "files": [],
+        }
+
+
+def maybe_replace_existing_files(
+    drive_manager,
+    destination: Dict[str, str],
+    replace_existing: bool,
+    progress_callback: Optional[Callable] = None,
+) -> List[str]:
+    """Trash existing files in the destination folder when replace is on."""
+    if not replace_existing:
+        return []
+
+    def update_progress(progress: float, message: str):
+        if progress_callback:
+            progress_callback(progress, message)
+
+    folder_id = destination["file_type_folder_id"]
+    path = destination.get("output_path_prefix", folder_id)
+    update_progress(0.93, f"🗑 Removing current files from {path}...")
+    deleted_names = drive_manager.trash_files_in_folder(folder_id)
+    update_progress(
+        0.94,
+        f"🗑 Removed {len(deleted_names)} file(s) from {path}",
+    )
+    return deleted_names
+
+
 def process_and_upload_pdf(
     uploaded_file,
     project_name: str,
@@ -108,6 +165,7 @@ def process_and_upload_pdf(
     include_footer: bool = True,
     progress_callback: Optional[Callable] = None,
     destination: Optional[Dict[str, str]] = None,
+    replace_existing: bool = False,
 ) -> Dict:
     """
     Process a PDF file and upload to Google Drive
@@ -182,6 +240,12 @@ def process_and_upload_pdf(
                     file_type,
                     progress_callback=progress_callback,
                 )
+                maybe_replace_existing_files(
+                    drive_manager,
+                    destination,
+                    replace_existing,
+                    progress_callback=progress_callback,
+                )
 
             file_type_id = destination["file_type_folder_id"]
             clean_project_name = destination["clean_project_name"]
@@ -234,6 +298,7 @@ def process_and_upload_pdfs(
     drive_manager,
     include_footer: bool = True,
     progress_callback: Optional[Callable] = None,
+    replace_existing: bool = False,
 ) -> List[Dict]:
     """Process and upload multiple PDFs, reusing one Drive destination lookup."""
     if not uploaded_files:
@@ -248,6 +313,12 @@ def process_and_upload_pdfs(
         project_name,
         branding_name,
         file_type,
+    )
+    maybe_replace_existing_files(
+        drive_manager,
+        destination,
+        replace_existing,
+        progress_callback=progress_callback,
     )
 
     for index, uploaded_file in enumerate(uploaded_files, start=1):
@@ -294,6 +365,7 @@ def process_and_upload_pdfs_multi_branding(
     drive_manager,
     include_footer: bool = True,
     progress_callback: Optional[Callable] = None,
+    replace_by_branding_id: Optional[Dict[str, bool]] = None,
 ) -> List[Dict]:
     """Process and upload PDFs to multiple branding folders."""
     if not uploaded_files:
@@ -317,6 +389,15 @@ def process_and_upload_pdfs_multi_branding(
             project_name,
             branding_name,
             file_type,
+        )
+        replace_existing = bool(
+            (replace_by_branding_id or {}).get(branding_id, False)
+        )
+        maybe_replace_existing_files(
+            drive_manager,
+            destination,
+            replace_existing,
+            progress_callback=progress_callback,
         )
 
         for file_index, uploaded_file in enumerate(uploaded_files, start=1):

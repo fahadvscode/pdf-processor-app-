@@ -8,6 +8,7 @@ from pathlib import Path
 
 from google_drive_helper import DriveManager
 from pdf_processor import (
+    inspect_output_folder,
     process_and_upload_pdf,
     process_and_upload_pdfs,
     process_and_upload_pdfs_multi_branding,
@@ -122,6 +123,8 @@ if 'brandings_cache' not in st.session_state:
     st.session_state.brandings_cache = {}
 if 'file_types_cache' not in st.session_state:
     st.session_state.file_types_cache = {}
+if 'existing_files_cache' not in st.session_state:
+    st.session_state.existing_files_cache = {}
 
 
 def get_cached_brandings(project_id: str):
@@ -195,6 +198,7 @@ with st.sidebar:
                 st.session_state.projects = st.session_state.drive_manager.get_all_projects()
             st.session_state.brandings_cache = {}
             st.session_state.file_types_cache = {}
+            st.session_state.existing_files_cache = {}
             st.success(f"✅ Refreshed! Now showing {len(st.session_state.projects)} projects")
             st.rerun()
     
@@ -211,9 +215,10 @@ with st.sidebar:
     **How it works:**
     1. Select project & branding(s)
     2. Choose file type
-    3. Upload up to **{MAX_PDF_FILES} PDFs** at once
-    4. Watch them process (each PDF × each branding)
-    5. Done! ✨
+    3. See existing Drive files and choose replace all or per folder
+    4. Upload up to **{MAX_PDF_FILES} PDFs** at once
+    5. Watch them process (each PDF × each branding)
+    6. Done! ✨
     
     **Limits:** {MAX_PDF_FILES} files per batch, {MAX_FILE_SIZE_MB} MB each.
     """)
@@ -367,9 +372,114 @@ else:
                     )
         
         st.divider()
+
+        folder_statuses = []
+        replace_all_folders = False
+        replace_by_branding_id = {}
+
+        # Step 4: Existing Drive files
+        st.header("4️⃣ Existing files in Drive")
+        if not selected_brandings or not selected_type:
+            st.caption("Select branding(s) and a file type to see files already in each output folder.")
+        else:
+            st.caption(
+                "These are files already in each branding's output folder. "
+                "Toggle replace-all, or replace only specific folders."
+            )
+            cache = st.session_state.existing_files_cache
+            with st.spinner("📂 Checking existing files in Drive..."):
+                for branding in selected_brandings:
+                    cache_key = (
+                        f"{selected_project['id']}|{branding['id']}|{selected_type}"
+                    )
+                    if cache_key not in cache:
+                        cache[cache_key] = inspect_output_folder(
+                            st.session_state.drive_manager,
+                            selected_project['name'],
+                            branding['name'],
+                            selected_type,
+                        )
+                    folder_statuses.append({
+                        "branding": branding,
+                        **cache[cache_key],
+                    })
+
+            total_existing = sum(len(item.get("files") or []) for item in folder_statuses)
+            folders_with_files = sum(
+                1 for item in folder_statuses if item.get("files")
+            )
+            if total_existing:
+                st.warning(
+                    f"⚠️ **{total_existing}** existing file(s) found in "
+                    f"**{folders_with_files}** folder(s)."
+                )
+            else:
+                st.success("✅ No existing files in the selected output folder(s).")
+
+            col_all, col_refresh = st.columns([3, 1])
+            with col_all:
+                replace_all_folders = st.toggle(
+                    "Remove current files in ALL selected folders",
+                    value=False,
+                    key=f"replace_all_{selected_project['id']}_{selected_type}",
+                    help="When ON, old files in every selected branding folder are moved to Drive trash, then new PDFs are uploaded.",
+                )
+            with col_refresh:
+                if st.button("Refresh list", use_container_width=True):
+                    for branding in selected_brandings:
+                        cache_key = (
+                            f"{selected_project['id']}|{branding['id']}|{selected_type}"
+                        )
+                        cache.pop(cache_key, None)
+                    st.rerun()
+
+            if replace_all_folders:
+                st.error(
+                    "All selected folders: existing files will be removed, then new files added."
+                )
+
+            for item in folder_statuses:
+                branding = item["branding"]
+                files = item.get("files") or []
+                title = f"{branding['name']} — {len(files)} file(s)"
+                with st.expander(title, expanded=bool(files) or not item.get("ok")):
+                    st.caption(item.get("output_path") or "")
+                    if not item.get("ok"):
+                        st.error(item.get("error") or "Could not read this folder.")
+                    elif not files:
+                        st.info("This folder is empty.")
+                    else:
+                        for drive_file in files:
+                            st.write(f"- {drive_file.get('name', '(unnamed)')}")
+
+                    per_folder_replace = st.toggle(
+                        f"Remove current files in {branding['name']} only",
+                        value=False,
+                        key=f"replace_{selected_project['id']}_{branding['id']}_{selected_type}",
+                        disabled=replace_all_folders,
+                        help="When ON, only this branding folder is cleared before upload.",
+                    )
+                    replace_by_branding_id[branding["id"]] = (
+                        replace_all_folders or per_folder_replace
+                    )
+
+            replacing_count = sum(
+                1 for item in folder_statuses
+                if replace_by_branding_id.get(item["branding"]["id"])
+                and item.get("files")
+            )
+            if replacing_count:
+                st.warning(
+                    f"Will remove existing files in **{replacing_count}** folder(s), "
+                    "then upload the new PDFs. Removed files go to Drive trash."
+                )
+            else:
+                st.info("Old files will be kept. New PDFs will be added next to them.")
+
+        st.divider()
         
-        # Step 4: Footer Options
-        st.header("4️⃣ Footer Options")
+        # Step 5: Footer Options
+        st.header("5️⃣ Footer Options")
         
         include_footer = st.toggle(
             "Include footer image",
@@ -384,8 +494,8 @@ else:
         
         st.divider()
         
-        # Step 5: Upload Files
-        st.header("5️⃣ Upload PDFs")
+        # Step 6: Upload Files
+        st.header("6️⃣ Upload PDFs")
         st.caption(f"Select up to {MAX_PDF_FILES} PDFs at once (max {MAX_FILE_SIZE_MB} MB each).")
 
         uploaded_files = st.file_uploader(
@@ -455,6 +565,9 @@ else:
                     )
 
                     if len(selected_brandings) == 1:
+                        replace_existing = replace_by_branding_id.get(
+                            selected_brandings[0]['id'], False
+                        )
                         if len(uploaded_files) == 1:
                             result = process_and_upload_pdf(
                                 uploaded_file=uploaded_files[0],
@@ -469,6 +582,7 @@ else:
                                     progress_bar.progress(p),
                                     status_text.text(msg),
                                 ),
+                                replace_existing=replace_existing,
                             )
                             batch_results = [result]
                         else:
@@ -485,6 +599,7 @@ else:
                                     progress_bar.progress(p),
                                     status_text.text(msg),
                                 ),
+                                replace_existing=replace_existing,
                             )
                     else:
                         batch_results = process_and_upload_pdfs_multi_branding(
@@ -499,6 +614,7 @@ else:
                                 progress_bar.progress(p),
                                 status_text.text(msg),
                             ),
+                            replace_by_branding_id=replace_by_branding_id,
                         )
 
                     progress_bar.progress(1.0)
@@ -559,6 +675,11 @@ else:
                         st.balloons()
 
                     st.session_state.upload_counter += 1
+                    for branding in selected_brandings:
+                        cache_key = (
+                            f"{selected_project['id']}|{branding['id']}|{selected_type}"
+                        )
+                        st.session_state.existing_files_cache.pop(cache_key, None)
                     st.info("✨ Ready for the next batch! Upload more PDFs to process.")
 
                 except Exception as e:
