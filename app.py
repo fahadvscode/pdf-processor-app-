@@ -127,12 +127,31 @@ if 'existing_files_cache' not in st.session_state:
     st.session_state.existing_files_cache = {}
 
 
+def _normalize_branding(branding):
+    """Keep only Drive folders that have an id; fill in a name if Drive omitted it."""
+    if not isinstance(branding, dict):
+        return None
+    branding_id = branding.get('id')
+    if not branding_id:
+        return None
+    name = branding.get('name') or branding.get('title')
+    if not name:
+        name = f"Unnamed ({str(branding_id)[:8]})"
+    return {'id': branding_id, 'name': name}
+
+
 def get_cached_brandings(project_id: str):
     """Load branding folders once per project per session."""
     cache = st.session_state.brandings_cache
     if project_id not in cache:
         cache[project_id] = st.session_state.drive_manager.get_brandings(project_id)
-    return cache[project_id]
+    normalized = []
+    for branding in cache.get(project_id) or []:
+        item = _normalize_branding(branding)
+        if item:
+            normalized.append(item)
+    cache[project_id] = normalized
+    return normalized
 
 
 def get_cached_file_types(branding_id: str):
@@ -149,13 +168,14 @@ def branding_option_labels(brandings):
     """Unique labels so Streamlit's multiselect does not crash on duplicate names."""
     name_counts = {}
     for branding in brandings:
-        name = branding['name']
+        name = branding.get('name') or f"Unnamed ({str(branding.get('id', ''))[:8]})"
         name_counts[name] = name_counts.get(name, 0) + 1
     labels = []
     for branding in brandings:
-        name = branding['name']
+        name = branding.get('name') or f"Unnamed ({str(branding.get('id', ''))[:8]})"
+        branding_id = str(branding.get('id', ''))
         if name_counts[name] > 1:
-            labels.append(f"{name} ({branding['id'][:8]})")
+            labels.append(f"{name} ({branding_id[:8]})")
         else:
             labels.append(name)
     return labels

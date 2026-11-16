@@ -317,16 +317,36 @@ class DriveManager:
     def get_brandings(self, project_id: str) -> List[Dict]:
         """Get branding folders for a project"""
         try:
-            def operation():
-                return self.drive_service.files().list(
-                    q=f"'{project_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
-                    fields="files(id, name)",
-                    pageSize=100
-                ).execute()
-            
-            results = self._execute_with_retries(operation, "Failed to get brandings")
-            
-            brandings = results.get('files', [])
+            brandings = []
+            page_token = None
+            while True:
+                query_params = {
+                    'q': (
+                        f"'{project_id}' in parents and trashed=false "
+                        f"and mimeType='application/vnd.google-apps.folder'"
+                    ),
+                    'fields': "nextPageToken, files(id, name)",
+                    'pageSize': 100,
+                }
+                if page_token:
+                    query_params['pageToken'] = page_token
+
+                def operation(params=query_params):
+                    return self.drive_service.files().list(**params).execute()
+
+                results = self._execute_with_retries(operation, "Failed to get brandings")
+                for folder in results.get('files', []):
+                    folder_id = folder.get('id')
+                    if not folder_id:
+                        continue
+                    brandings.append({
+                        'id': folder_id,
+                        'name': folder.get('name') or f"Unnamed ({folder_id[:8]})",
+                    })
+                page_token = results.get('nextPageToken')
+                if not page_token:
+                    break
+            brandings.sort(key=lambda item: item['name'].lower())
             return brandings
         except Exception as e:
             raise Exception(f"Failed to get brandings: {e}")
