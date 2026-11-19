@@ -384,7 +384,8 @@ else:
         selected_branding_names = st.multiselect(
             "Select branding(s)",
             options=branding_labels,
-            default=branding_labels,
+            default=[],
+            placeholder="Click to choose branding(s)…",
             key=f"brandings_{selected_project['id']}",
             label_visibility="collapsed",
         )
@@ -395,7 +396,9 @@ else:
             if name in label_to_branding
         ]
 
-        if selected_brandings:
+        if not brandings:
+            st.warning("⚠️ No branding folders found inside this project in Google Drive.")
+        elif selected_brandings:
             st.info(
                 f"✅ **{len(selected_brandings)}** branding(s) selected: "
                 f"{', '.join(selected_branding_names)}"
