@@ -384,7 +384,7 @@ else:
         selected_branding_names = st.multiselect(
             "Select branding(s)",
             options=branding_labels,
-            default=[],
+            default=branding_labels,
             placeholder="Click to choose branding(s)…",
             key=f"brandings_{selected_project['id']}",
             label_visibility="collapsed",

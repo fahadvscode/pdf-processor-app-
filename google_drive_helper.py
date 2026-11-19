@@ -10,6 +10,7 @@ import json
 import time
 import socket
 import ssl
+import threading
 from pathlib import Path
 from typing import List, Dict, Optional, Callable
 from googleapiclient.discovery import build
@@ -59,10 +60,25 @@ class DriveManager:
     def __init__(self):
         """Initialize Drive service"""
         self.creds = self._get_credentials()
+        self._local = threading.local()
         self.drive_service = self._build_drive_service()
         self.input_folder_id = DRIVE_INPUT_FOLDER_ID
         self.output_folder_id = DRIVE_OUTPUT_FOLDER_ID
-    
+
+    # httplib2 connections are not thread-safe: two Streamlit script runs sharing
+    # one SSL socket corrupt memory and segfault the server. One service per thread.
+    @property
+    def drive_service(self):
+        service = getattr(self._local, 'service', None)
+        if service is None:
+            service = self._build_drive_service()
+            self._local.service = service
+        return service
+
+    @drive_service.setter
+    def drive_service(self, service):
+        self._local.service = service
+
     def _build_drive_service(self):
         """Create a Drive service instance with safe defaults"""
         return build('drive', 'v3', credentials=self.creds, cache_discovery=False)
