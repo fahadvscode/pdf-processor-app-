@@ -3,6 +3,12 @@ PDF Processor - Web Interface
 Simple, reliable PDF processing with Google Drive integration
 """
 
+import faulthandler
+import sys
+
+if not faulthandler.is_enabled():
+    faulthandler.enable(file=sys.stderr, all_threads=True)
+
 import streamlit as st
 from pathlib import Path
 
