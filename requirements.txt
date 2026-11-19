@@ -1,9 +1,7 @@
 # Streamlit Cloud must use Python 3.12 (set in Advanced settings; runtime.txt is ignored).
 # Python 3.13 + numpy 2 + pyarrow/opencv aborts with "double free or corruption".
-# This wheel installs a site.pth so OpenBLAS/Arrow limits apply before import.
-# PyArrow 17 segfaults this app on Cloud; 24 is the last release before the
-# PyArrow 25 mimalloc crash (apache/arrow#50471).
-./wheels/zz_cloud_runtime-1.0.0-py3-none-any.whl
+# Pins match the 2026-11-16 boot. narwhals 2.29.0 (2026-11-17) is the only
+# package that moved before the 2026-11-18 startup segfault.
 streamlit==1.44.1
 altair==5.5.0
 narwhals==2.28.0
@@ -18,4 +16,5 @@ pandas==2.3.3
 protobuf==5.29.6
 requests==2.34.2
 cairosvg==2.9.1
-pyarrow==24.0.0
+# pyarrow 25 segfaults on Streamlit Cloud (apache/arrow#50471)
+pyarrow==17.0.0
