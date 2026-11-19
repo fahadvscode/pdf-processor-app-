@@ -732,11 +732,13 @@ else:
                         )
                         st.caption(f"📁 {result['output_path']}")
                         if drive_link != 'N/A':
-                            st.link_button(
-                                f"🔗 Open in Drive",
-                                drive_link,
-                                key=f"drive_link_{result['file_id']}_{branding_label}",
-                            )
+                            # Streamlit 1.44 link_button has no key argument.
+                            # Labels must be unique or duplicate buttons raise.
+                            link_label = "🔗 Open in Drive"
+                            if branding_label:
+                                link_label = f"{link_label} — {branding_label}"
+                            link_label = f"{link_label} — {result['file_name']}"
+                            st.link_button(link_label, drive_link)
 
                     if partial_errors:
                         st.warning(
