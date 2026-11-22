@@ -32,9 +32,24 @@ type ProcessResult = {
 /* ------------------------------------------------------------------ */
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
-  const json = await res.json();
+  const text = await res.text();
+  let json: { error?: string } = {};
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      const plain = text.replace(/\s+/g, " ").trim().slice(0, 240);
+      throw new Error(plain || `HTTP ${res.status}`);
+    }
+  }
   if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
   return json as T;
+}
+
+const DIRECT_UPLOAD_LIMIT = 4_000_000;
+
+function fileKey(file: File): string {
+  return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -46,6 +61,7 @@ export default function Home() {
   const [authError, setAuthError] = useState("");
   const [pwBusy, setPwBusy] = useState(false);
   const pwRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef("");
 
   /* drive */
   const [projects, setProjects] = useState<Project[]>([]);
@@ -82,14 +98,17 @@ export default function Home() {
   const doLogin = useCallback(async () => {
     setPwBusy(true);
     setAuthError("");
+    const password = pwRef.current?.value || "";
     try {
       const { ok } = await api<{ ok: boolean }>("/api/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: pwRef.current?.value || "" }),
+        body: JSON.stringify({ password }),
       });
-      if (ok) setAuthed(true);
-      else setAuthError("Incorrect password");
+      if (ok) {
+        passwordRef.current = password;
+        setAuthed(true);
+      } else setAuthError("Incorrect password");
     } catch (e: any) {
       setAuthError(e.message);
     } finally {
@@ -217,17 +236,27 @@ export default function Home() {
     }
     const total = jobs.length;
     const collected: ProcessResult[] = [];
+    const blobUrls = new Map<string, string>();
+    const usesLeft = new Map<string, number>();
+    for (const job of jobs) {
+      const key = fileKey(job.file);
+      usesLeft.set(key, (usesLeft.get(key) || 0) + 1);
+    }
     let done = 0;
 
     try {
       for (const job of jobs) {
         const shouldReplace = replaceAll || !!replaceMap[job.branding.id];
         const isFirstFileForBranding = done === 0 || jobs[done - 1]?.branding.id !== job.branding.id;
+        const key = fileKey(job.file);
+        const large = job.file.size > DIRECT_UPLOAD_LIMIT;
 
-        setStatusMsg(`[${done + 1}/${total}] ${job.branding.name} — ${job.file.name}`);
+        setStatusMsg(
+          `[${done + 1}/${total}] ${job.branding.name} — ${job.file.name}` +
+            (large ? " (large file)" : "")
+        );
 
         const form = new FormData();
-        form.append("file", job.file);
         form.append("project_name", selectedProject.name);
         form.append("branding_name", job.branding.name);
         form.append("file_type", selectedType);
@@ -235,6 +264,31 @@ export default function Home() {
         form.append("replace_existing", shouldReplace && isFirstFileForBranding ? "1" : "0");
 
         try {
+          if (large) {
+            let blobUrl = blobUrls.get(key);
+            if (!blobUrl) {
+              setStatusMsg(`[${done + 1}/${total}] Uploading ${job.file.name}…`);
+              const { upload } = await import("@vercel/blob/client");
+              const blob = await upload(job.file.name, job.file, {
+                access: "public",
+                handleUploadUrl: "/api/upload",
+                contentType: "application/pdf",
+                multipart: true,
+                clientPayload: JSON.stringify({ password: passwordRef.current }),
+              });
+              blobUrl = blob.url;
+              blobUrls.set(key, blobUrl);
+            }
+            const left = (usesLeft.get(key) || 1) - 1;
+            usesLeft.set(key, left);
+            form.append("blob_url", blobUrl);
+            form.append("file_name", job.file.name);
+            form.append("delete_blob", left === 0 ? "1" : "0");
+            setStatusMsg(`[${done + 1}/${total}] ${job.branding.name} — ${job.file.name}`);
+          } else {
+            form.append("file", job.file);
+          }
+
           const result = await api<ProcessResult>("/api/process", {
             method: "POST",
             body: form,

@@ -1,5 +1,8 @@
 node_modules/
 .next/
 .env.local
+.vercel/
+tsconfig.tsbuildinfo
 __pycache__/
 *.pyc
+.vercel

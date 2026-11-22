@@ -162,6 +162,141 @@ def _insert_footer(page: fitz.Page, footer_png: Optional[bytes]):
 
 
 # ---------------------------------------------------------------------------
+# Broken-PDF repair
+# ---------------------------------------------------------------------------
+def _needs_repair(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(
+        token in msg
+        for token in (
+            "xref",
+            "cannot find object",
+            "code=7",
+            "format error",
+            "cannot open",
+            "source object number out of range",
+        )
+    )
+
+
+def _probe_pdf(path: str) -> bool:
+    """True when MuPDF can open every page."""
+    try:
+        doc = fitz.open(path)
+    except Exception:
+        return False
+    try:
+        if doc.page_count < 1:
+            return False
+        for i in range(doc.page_count):
+            page = doc[i]
+            if page.rect.width <= 0 or page.rect.height <= 0:
+                return False
+            page.get_contents()
+        return True
+    except Exception:
+        return False
+    finally:
+        doc.close()
+
+
+def _repair_with_pikepdf(src: str, dst: str) -> bool:
+    import pikepdf
+
+    with pikepdf.open(src, attempt_recovery=True) as pdf:
+        pdf.save(dst)
+    return os.path.isfile(dst) and os.path.getsize(dst) > 100 and _probe_pdf(dst)
+
+
+def _repair_with_pypdf(src: str, dst: str) -> bool:
+    from pypdf import PdfReader, PdfWriter
+
+    try:
+        reader = PdfReader(src, strict=False)
+    except TypeError:
+        reader = PdfReader(src)
+    writer = PdfWriter()
+    kept = 0
+    for i, page in enumerate(reader.pages):
+        try:
+            writer.add_page(page)
+            kept += 1
+        except Exception as exc:
+            logger.warning("Dropping unreadable page %s: %s", i + 1, exc)
+    if kept < 1:
+        return False
+    with open(dst, "wb") as handle:
+        writer.write(handle)
+    return os.path.isfile(dst) and os.path.getsize(dst) > 100 and _probe_pdf(dst)
+
+
+def _repair_by_raster(src: str, dst: str) -> bool:
+    """Last resort: redraw each readable page as an image."""
+    try:
+        doc = fitz.open(src)
+    except Exception as exc:
+        logger.warning("Raster open failed: %s", exc)
+        return False
+    out = fitz.open()
+    kept = 0
+    try:
+        for i in range(doc.page_count):
+            try:
+                page = doc[i]
+                longest = max(page.rect.width, page.rect.height) or 1
+                zoom = min(2.0, 2400.0 / longest)
+                zoom = max(0.6, zoom)
+                pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+                new_page = out.new_page(width=page.rect.width, height=page.rect.height)
+                new_page.insert_image(new_page.rect, stream=pix.tobytes("jpeg", jpg_quality=82))
+                kept += 1
+            except Exception as exc:
+                logger.warning("Raster page %s failed: %s", i + 1, exc)
+        if kept < 1:
+            return False
+        out.save(dst, garbage=4, deflate=True)
+        return _probe_pdf(dst)
+    finally:
+        out.close()
+        doc.close()
+
+
+def _repair_pdf(src: str) -> str:
+    dst = src + ".repaired.pdf"
+    errors = []
+    for name, fn in (
+        ("pikepdf", _repair_with_pikepdf),
+        ("pypdf", _repair_with_pypdf),
+        ("raster", _repair_by_raster),
+    ):
+        try:
+            if fn(src, dst):
+                logger.info("Repaired PDF with %s", name)
+                return dst
+            errors.append(f"{name}: output still unreadable")
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+            logger.warning("%s repair failed: %s", name, exc)
+    raise RuntimeError("Could not repair PDF (" + "; ".join(errors) + ")")
+
+
+def _stamp_pdf(source: str, output_path: str, watermark_text: str, footer_png: Optional[bytes], include_footer: bool):
+    doc = fitz.open(source)
+    try:
+        for page_num, page in enumerate(doc):
+            _apply_watermark(page, watermark_text, WATERMARK_OPACITY, WATERMARK_ANGLE_DEGREES)
+            if include_footer:
+                _insert_footer(page, footer_png)
+            if (page_num + 1) % 10 == 0:
+                gc.collect()
+        doc.save(output_path, garbage=4, deflate=True)
+    finally:
+        doc.close()
+        del doc
+        gc.collect()
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 def process_pdf_enhanced(
@@ -183,18 +318,20 @@ def process_pdf_enhanced(
     if include_footer and not footer_png:
         logger.error("Footer image could not be loaded")
 
-    doc = fitz.open(input_path)
+    source = input_path
+    if not _probe_pdf(source):
+        logger.warning("PDF failed to open cleanly, repairing first: %s", input_path)
+        source = _repair_pdf(input_path)
+
     try:
-        for page_num, page in enumerate(doc):
-            _apply_watermark(page, watermark_text, WATERMARK_OPACITY, WATERMARK_ANGLE_DEGREES)
-            if include_footer:
-                _insert_footer(page, footer_png)
-            if (page_num + 1) % 10 == 0:
-                gc.collect()
-        doc.save(output_path)
+        _stamp_pdf(source, output_path, watermark_text, footer_png, include_footer)
+    except Exception as exc:
+        if source != input_path or not _needs_repair(exc):
+            raise
+        logger.warning("Stamp failed on original PDF (%s), repairing and retrying", exc)
+        source = _repair_pdf(input_path)
+        _stamp_pdf(source, output_path, watermark_text, footer_png, include_footer)
     finally:
-        doc.close()
-        del doc
         if footer_png:
             del footer_png
         gc.collect()

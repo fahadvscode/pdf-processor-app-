@@ -8,6 +8,7 @@ Accepts multipart form with:
 Returns JSON with drive_url, file_name, processing_time, file_size, output_path.
 """
 from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlparse
 import cgi
 import json
 import os
@@ -15,6 +16,7 @@ import sys
 import tempfile
 import time
 import gc
+import requests
 
 # Make sure the api package root is importable so the redactor can find assets
 API_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -28,9 +30,48 @@ from lib.drive import resolve_destination, trash_files, upload_file, _build_serv
 
 def _process_pdf(input_path: str, output_path: str, project_folder_path: str, include_footer: bool):
     """Run the redactor. Imported lazily to keep cold starts fast for other endpoints."""
-    # The redactor lives next to this file (copied into api/lib/)
     from lib.redactor import process_pdf_enhanced
     process_pdf_enhanced(input_path, output_path, project_folder_path, include_footer)
+
+
+def _safe_name(name: str) -> str:
+    name = os.path.basename((name or "upload.pdf").replace("\x00", "")).strip() or "upload.pdf"
+    if not name.lower().endswith(".pdf"):
+        name += ".pdf"
+    return name
+
+
+def _is_blob_url(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return url.startswith("https://") and host.endswith(".blob.vercel-storage.com")
+
+
+def _download_blob(url: str) -> bytes:
+    if not _is_blob_url(url):
+        raise RuntimeError("Invalid upload URL")
+    resp = requests.get(url, timeout=180)
+    resp.raise_for_status()
+    if not resp.content:
+        raise RuntimeError("Uploaded PDF was empty")
+    return resp.content
+
+
+def _delete_blob(url: str) -> None:
+    token = os.environ.get("BLOB_READ_WRITE_TOKEN", "")
+    if not token or not _is_blob_url(url):
+        return
+    try:
+        requests.post(
+            "https://vercel.com/api/blob/delete",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"urls": [url]},
+            timeout=30,
+        )
+    except Exception:
+        pass
 
 
 class handler(BaseHTTPRequestHandler):
@@ -51,14 +92,24 @@ class handler(BaseHTTPRequestHandler):
                 },
             )
 
-            pdf_field = form["file"]
-            pdf_bytes = pdf_field.file.read()
-            file_name = pdf_field.filename or "upload.pdf"
             project_name = form.getfirst("project_name", "")
             branding_name = form.getfirst("branding_name", "")
             file_type = form.getfirst("file_type", "")
             include_footer = form.getfirst("include_footer", "1") == "1"
             replace_existing = form.getfirst("replace_existing", "0") == "1"
+            blob_url = (form.getfirst("blob_url", "") or "").strip()
+            delete_blob = form.getfirst("delete_blob", "0") == "1"
+
+            if blob_url:
+                pdf_bytes = _download_blob(blob_url)
+                file_name = _safe_name(form.getfirst("file_name", "") or "upload.pdf")
+            elif "file" in form:
+                pdf_field = form["file"]
+                pdf_bytes = pdf_field.file.read()
+                file_name = _safe_name(pdf_field.filename or "upload.pdf")
+            else:
+                self._json(400, {"error": "PDF file is required"})
+                return
 
             if not all([project_name, branding_name, file_type]):
                 self._json(400, {"error": "project_name, branding_name, file_type required"})
@@ -109,6 +160,9 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             gc.collect()
             self._json(500, {"error": str(e), "processing_time": round(time.time() - start, 2)})
+        finally:
+            if "delete_blob" in locals() and delete_blob and blob_url:
+                _delete_blob(blob_url)
 
     def _json(self, status: int, data: dict):
         body = json.dumps(data).encode()
