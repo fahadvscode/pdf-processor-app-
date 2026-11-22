@@ -1,0 +1,202 @@
+"""
+Standalone PDF redactor for Vercel serverless functions.
+Adds watermark and footer to every page. No content removal.
+Extracted from ai_enhanced_redactor.py — no Streamlit dependency.
+"""
+
+import io
+import os
+import sys
+import gc
+import logging
+import time
+import requests
+from pathlib import Path
+from typing import List, Tuple, Optional
+
+import fitz  # PyMuPDF
+from PIL import Image
+
+logger = logging.getLogger("redactor")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# ---------------------------------------------------------------------------
+# Branding configuration
+# ---------------------------------------------------------------------------
+DEFAULT_WATERMARK_TEXT = "Precon Factory\n(647) 956-4063"
+DEFAULT_FOOTER_IMAGE_URL = "https://cfzuypbljirmibmxpabi.supabase.co/storage/v1/object/public/email-images/footer/footer%20precon%20factory.png"
+
+FAHAD_WATERMARK_TEXT = "Fahad Javed\n(289) 536-9724"
+FAHAD_FOOTER_IMAGE_URL = "https://images.preconfactory.com/storage/v1/object/public/rental-documents/1790030570491_0_new_footer_fj.png"
+FAHAD_FOOTER_LOCAL_PATH = Path(__file__).resolve().parent.parent.parent / "assets" / "fahad_javed_footer.png"
+
+GTA_LOWRISE_WATERMARK_TEXT = "GTA Lowrise\n(289) 536-9724"
+GTA_LOWRISE_FOOTER_IMAGE_URL = "https://images.preconfactory.com/storage/v1/object/public/rental-documents/1794798498507_0_gta_lowrise_footer.png"
+GTA_LOWRISE_FOOTER_LOCAL_PATH = Path(__file__).resolve().parent.parent.parent / "assets" / "gta_lowrise_footer.png"
+
+WATERMARK_OPACITY = 0.30
+WATERMARK_ANGLE_DEGREES = 35
+WATERMARK_FONT_FRACTION_OF_MIN_SIDE = 0.14
+
+
+# ---------------------------------------------------------------------------
+# Branding routing
+# ---------------------------------------------------------------------------
+def _normalize(text: str) -> str:
+    return "".join(ch.lower() for ch in (text or "") if ch.isalnum())
+
+
+def _is_fahad(path: str) -> bool:
+    name = (path or "").split("/")[0]
+    lower = name.lower()
+    compact = _normalize(name)
+    return "fahad" in lower or compact.startswith("fj")
+
+
+def _get_branding_config(project_folder_path: str):
+    folder_path_lower = project_folder_path.lower()
+    if "gta" in folder_path_lower and "lowrise" in folder_path_lower:
+        return GTA_LOWRISE_WATERMARK_TEXT, GTA_LOWRISE_FOOTER_IMAGE_URL
+    if _is_fahad(project_folder_path):
+        return FAHAD_WATERMARK_TEXT, FAHAD_FOOTER_IMAGE_URL
+    return DEFAULT_WATERMARK_TEXT, DEFAULT_FOOTER_IMAGE_URL
+
+
+# ---------------------------------------------------------------------------
+# Footer / watermark helpers
+# ---------------------------------------------------------------------------
+def _download_image_bytes(url: str) -> Optional[bytes]:
+    try:
+        resp = requests.get(
+            url, timeout=20,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; PDFProcessor/1.0)",
+                "Accept": "image/png,image/*,*/*;q=0.8",
+                "Cache-Control": "no-cache",
+            },
+        )
+        resp.raise_for_status()
+        return resp.content
+    except Exception as e:
+        logger.error("Failed to download image from %s: %s", url, e)
+        return None
+
+
+def _load_footer_bytes(watermark_text: str, footer_image_url: str) -> Optional[bytes]:
+    if watermark_text == FAHAD_WATERMARK_TEXT and FAHAD_FOOTER_LOCAL_PATH.exists():
+        return FAHAD_FOOTER_LOCAL_PATH.read_bytes()
+    if watermark_text == GTA_LOWRISE_WATERMARK_TEXT and GTA_LOWRISE_FOOTER_LOCAL_PATH.exists():
+        return GTA_LOWRISE_FOOTER_LOCAL_PATH.read_bytes()
+    return _download_image_bytes(footer_image_url)
+
+
+def _font_candidates() -> List[str]:
+    base = Path(__file__).resolve().parent
+    candidates = [
+        str(base / "fonts" / "DejaVuSans-Bold.ttf"),
+        str(base / "fonts" / "DejaVuSans.ttf"),
+    ]
+    candidates.extend([
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ])
+    return candidates
+
+
+def _load_font() -> fitz.Font:
+    for path in _font_candidates():
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            return fitz.Font(fontfile=path)
+        except Exception:
+            try:
+                with open(path, "rb") as fp:
+                    return fitz.Font(fontbuffer=fp.read())
+            except Exception:
+                continue
+    return fitz.Font("hebo")
+
+
+def _watermark_lines(text: str) -> List[str]:
+    return [ln.strip() for ln in text.replace("\r\n", "\n").split("\n") if ln.strip()]
+
+
+def _apply_watermark(page: fitz.Page, text: str, opacity: float, angle_deg: float):
+    lines = _watermark_lines(text)
+    if not lines:
+        return
+    font = _load_font()
+    rect = page.rect
+    w, h = rect.width, rect.height
+    cx, cy = w / 2.0, h / 2.0
+    fontsize = max(24.0, min(w, h) * float(WATERMARK_FONT_FRACTION_OF_MIN_SIDE))
+    asc, desc = font.ascender, font.descender
+    line_height = fontsize * (asc - desc) if (asc > desc and (asc - desc) > 0.01) else fontsize * 1.2
+    span = (len(lines) - 1) * line_height
+    y_first = cy - span / 2.0
+    tw = fitz.TextWriter(rect)
+    for i, line in enumerate(lines):
+        lw = font.text_length(line, fontsize)
+        tw.append(fitz.Point(cx - lw / 2.0, y_first + i * line_height), line, font=font, fontsize=fontsize)
+    morph = (fitz.Point(cx, cy), fitz.Matrix(angle_deg))
+    tw.write_text(page, color=(0, 0, 0), opacity=max(0.0, min(1.0, float(opacity))), overlay=True, morph=morph)
+
+
+def _insert_footer(page: fitz.Page, footer_png: Optional[bytes]):
+    if not footer_png:
+        return
+    try:
+        pw, ph = page.rect.width, page.rect.height
+        with Image.open(io.BytesIO(footer_png)) as im:
+            iw, ih = im.size
+        scale = pw / float(iw)
+        th = ih * scale
+        rect = fitz.Rect(0, ph - th, pw, ph)
+        page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), overlay=True)
+        page.insert_image(rect, stream=footer_png, keep_proportion=True, overlay=True)
+    except Exception as e:
+        logger.warning("Failed to insert footer: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+def process_pdf_enhanced(
+    input_path: str,
+    output_path: str,
+    project_folder_path: str = "",
+    include_footer: bool = True,
+):
+    """Add watermark (and optional footer) to every page of a PDF."""
+    start = time.time()
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"Input not found: {input_path}")
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    watermark_text, footer_url = _get_branding_config(project_folder_path)
+    footer_png = _load_footer_bytes(watermark_text, footer_url) if include_footer else None
+    if include_footer and not footer_png:
+        logger.error("Footer image could not be loaded")
+
+    doc = fitz.open(input_path)
+    try:
+        for page_num, page in enumerate(doc):
+            _apply_watermark(page, watermark_text, WATERMARK_OPACITY, WATERMARK_ANGLE_DEGREES)
+            if include_footer:
+                _insert_footer(page, footer_png)
+            if (page_num + 1) % 10 == 0:
+                gc.collect()
+        doc.save(output_path)
+    finally:
+        doc.close()
+        del doc
+        if footer_png:
+            del footer_png
+        gc.collect()
+
+    logger.info("Processed %s in %.2fs", input_path, time.time() - start)

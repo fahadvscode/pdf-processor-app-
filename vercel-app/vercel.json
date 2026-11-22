@@ -1,0 +1,13 @@
+{
+  "framework": "nextjs",
+  "functions": {
+    "api/*.py": {
+      "runtime": "@vercel/python",
+      "maxDuration": 800,
+      "memory": 3008
+    }
+  },
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/:path*" }
+  ]
+}

@@ -26,7 +26,13 @@ build/
 
 # OS
 .DS_Store
+._*
 Thumbs.db
+
+# Vercel app build artifacts
+vercel-app/node_modules/
+vercel-app/.next/
+vercel-app/.env.local
 
 # Temp files
 temp_processing/
