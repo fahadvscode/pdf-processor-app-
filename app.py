@@ -585,7 +585,7 @@ else:
             type=['pdf'],
             accept_multiple_files=True,
             label_visibility="collapsed",
-            key=f"pdf_uploader_{st.session_state.upload_counter}"
+            key=f"pdf_uploader_{selected_project['id']}_{selected_type}_{st.session_state.upload_counter}"
         )
 
         if uploaded_files:

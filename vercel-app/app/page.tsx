@@ -94,6 +94,15 @@ export default function Home() {
   const [results, setResults] = useState<ProcessResult[]>([]);
   const [processError, setProcessError] = useState("");
 
+  useEffect(() => {
+    setFiles([]);
+    setResults([]);
+    setProcessError("");
+    setProgress(0);
+    setStatusMsg("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, [selectedType]);
+
   /* ---- auth ---- */
   const doLogin = useCallback(async () => {
     setPwBusy(true);
@@ -471,7 +480,14 @@ export default function Home() {
               ) : fileTypes.length === 0 ? (
                 <div className="alert alert-warn">No file type folders found in Raw folder.</div>
               ) : (
-                <select value={selectedType} onChange={(e) => setSelectedType(e.target.value)}>
+                <select
+                  value={selectedType}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    if (next === selectedType) return;
+                    setSelectedType(next);
+                  }}
+                >
                   {fileTypes.map((t) => (
                     <option key={t} value={t}>
                       {t}
