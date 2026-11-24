@@ -28,10 +28,12 @@ sys.path.insert(0, API_DIR)
 from lib.drive import resolve_destination, trash_files, upload_file, _build_service
 
 
-def _process_pdf(input_path: str, output_path: str, project_folder_path: str, include_footer: bool):
+def _process_pdf(input_path: str, output_path: str, project_folder_path: str, include_footer: bool, whiteouts_raw: str):
     """Run the redactor. Imported lazily to keep cold starts fast for other endpoints."""
-    from lib.redactor import process_pdf_enhanced
-    process_pdf_enhanced(input_path, output_path, project_folder_path, include_footer)
+    from lib.redactor import parse_whiteouts, process_pdf_enhanced
+    whiteouts = parse_whiteouts(whiteouts_raw)
+    process_pdf_enhanced(input_path, output_path, project_folder_path, include_footer, whiteouts)
+    return len(whiteouts)
 
 
 def _safe_name(name: str) -> str:
@@ -97,6 +99,7 @@ class handler(BaseHTTPRequestHandler):
             file_type = form.getfirst("file_type", "")
             include_footer = form.getfirst("include_footer", "1") == "1"
             replace_existing = form.getfirst("replace_existing", "0") == "1"
+            whiteouts_raw = form.getfirst("whiteouts", "") or ""
             blob_url = (form.getfirst("blob_url", "") or "").strip()
             delete_blob = form.getfirst("delete_blob", "0") == "1"
 
@@ -122,11 +125,12 @@ class handler(BaseHTTPRequestHandler):
                 with open(in_path, "wb") as f:
                     f.write(pdf_bytes)
 
-                _process_pdf(
+                whiteout_count = _process_pdf(
                     in_path,
                     out_path,
                     f"{branding_name}/{project_name}",
                     include_footer,
+                    whiteouts_raw,
                 )
 
                 if not os.path.exists(out_path):
@@ -155,6 +159,7 @@ class handler(BaseHTTPRequestHandler):
                 "output_path": f"{dest['output_path']}/{file_name}",
                 "processing_time": round(processing_time, 2),
                 "file_size": file_size,
+                "whiteouts": whiteout_count,
             })
 
         except Exception as e:

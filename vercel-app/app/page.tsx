@@ -1,5 +1,9 @@
 "use client";
 import { useState, useRef, useCallback, useEffect } from "react";
+import dynamic from "next/dynamic";
+import type { Whiteout } from "./WhiteoutEditor";
+
+const WhiteoutEditor = dynamic(() => import("./WhiteoutEditor"), { ssr: false });
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -24,6 +28,7 @@ type ProcessResult = {
   output_path?: string;
   processing_time?: number;
   file_size?: number;
+  whiteouts?: number;
   error?: string;
 };
 
@@ -93,9 +98,13 @@ export default function Home() {
   const [statusMsg, setStatusMsg] = useState("");
   const [results, setResults] = useState<ProcessResult[]>([]);
   const [processError, setProcessError] = useState("");
+  const [whiteouts, setWhiteouts] = useState<Record<string, Whiteout[]>>({});
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
 
   useEffect(() => {
     setFiles([]);
+    setWhiteouts({});
+    setEditingIndex(null);
     setResults([]);
     setProcessError("");
     setProgress(0);
@@ -271,6 +280,7 @@ export default function Home() {
         form.append("file_type", selectedType);
         form.append("include_footer", includeFooter ? "1" : "0");
         form.append("replace_existing", shouldReplace && isFirstFileForBranding ? "1" : "0");
+        form.append("whiteouts", JSON.stringify(whiteouts[key] || []));
 
         try {
           if (large) {
@@ -320,7 +330,7 @@ export default function Home() {
       setProcessing(false);
       setStatusMsg("");
     }
-  }, [selectedProject, selectedBrandings, selectedType, files, includeFooter, replaceAll, replaceMap]);
+  }, [selectedProject, selectedBrandings, selectedType, files, includeFooter, replaceAll, replaceMap, whiteouts]);
 
   /* ---- filtered projects ---- */
   const filtered = search
@@ -407,6 +417,7 @@ export default function Home() {
               setSelectedType("");
               setFolderStatuses([]);
               setFiles([]);
+              setWhiteouts({});
               setResults([]);
             }}
             style={{ marginTop: ".4rem" }}
@@ -618,23 +629,68 @@ export default function Home() {
               </div>
               {files.length > 0 && (
                 <>
-                  <details className="expander" style={{ margin: ".5rem 0" }}>
-                    <summary>View selected files</summary>
-                    <ul style={{ paddingLeft: "1.2rem", fontSize: ".9rem" }}>
-                      {files.map((f, i) => (
-                        <li key={i}>
-                          {f.name} ({(f.size / 1024 / 1024).toFixed(2)} MB)
+                  <p className="caption" style={{ marginTop: ".5rem" }}>
+                    Need to hide something (agent name, phone, price…)? Click ✏️ White out next to
+                    the file. It applies to every selected branding.
+                  </p>
+                  <ul className="file-list">
+                    {files.map((f, i) => {
+                      const key = fileKey(f);
+                      const count = whiteouts[key]?.length || 0;
+                      return (
+                        <li key={`${key}-${i}`} className="file-row">
+                          <span className="name" title={f.name}>
+                            {f.name}{" "}
+                            <span className="caption">({(f.size / 1024 / 1024).toFixed(2)} MB)</span>
+                          </span>
+                          {count > 0 && <span className="wo-badge">{count} area(s) hidden</span>}
+                          <button
+                            className="btn-sm btn-whiteout"
+                            disabled={processing}
+                            onClick={() => setEditingIndex(i)}
+                          >
+                            ✏️ {count ? "Edit white-out" : "White out"}
+                          </button>
                           <button
                             className="btn-sm btn-outline"
-                            style={{ marginLeft: ".5rem" }}
-                            onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
+                            disabled={processing}
+                            aria-label={`Remove ${f.name}`}
+                            onClick={() => {
+                              const remaining = files.filter((_, j) => j !== i);
+                              setFiles(remaining);
+                              if (!remaining.some((r) => fileKey(r) === key)) {
+                                setWhiteouts((w) => {
+                                  const next = { ...w };
+                                  delete next[key];
+                                  return next;
+                                });
+                              }
+                            }}
                           >
                             ✕
                           </button>
                         </li>
-                      ))}
-                    </ul>
-                  </details>
+                      );
+                    })}
+                  </ul>
+
+                  {editingIndex !== null && files[editingIndex] && (
+                    <WhiteoutEditor
+                      file={files[editingIndex]}
+                      initial={whiteouts[fileKey(files[editingIndex])] || []}
+                      onClose={() => setEditingIndex(null)}
+                      onSave={(boxes) => {
+                        const key = fileKey(files[editingIndex]);
+                        setWhiteouts((w) => {
+                          const next = { ...w };
+                          if (boxes.length) next[key] = boxes;
+                          else delete next[key];
+                          return next;
+                        });
+                        setEditingIndex(null);
+                      }}
+                    />
+                  )}
 
                   <button
                     className="btn btn-primary btn-block"
@@ -677,6 +733,11 @@ export default function Home() {
                           <strong>{r.branding_name}</strong> — {r.file_name} —{" "}
                           {((r.file_size || 0) / 1024 / 1024).toFixed(2)} MB,{" "}
                           {r.processing_time?.toFixed(1)}s
+                          {!!r.whiteouts && (
+                            <span className="wo-badge" style={{ marginLeft: ".4rem" }}>
+                              {r.whiteouts} area(s) whited out
+                            </span>
+                          )}
                           <div className="caption">📁 {r.output_path}</div>
                           {r.drive_url && (
                             <a

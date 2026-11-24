@@ -280,9 +280,91 @@ def _repair_pdf(src: str) -> str:
     raise RuntimeError("Could not repair PDF (" + "; ".join(errors) + ")")
 
 
-def _stamp_pdf(source: str, output_path: str, watermark_text: str, footer_png: Optional[bytes], include_footer: bool):
+# ---------------------------------------------------------------------------
+# Manual white-out
+# ---------------------------------------------------------------------------
+MAX_WHITEOUTS = 1000
+
+
+def parse_whiteouts(raw) -> List[dict]:
+    """Validate boxes sent by the browser.
+
+    Each box is {page, x0, y0, x1, y1}: a 0-based page index and corners as
+    fractions (0..1) of the page as displayed, origin top-left.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        import json
+        raw = json.loads(raw)
+    if not isinstance(raw, list):
+        raise ValueError("whiteouts must be a list")
+    boxes = []
+    for item in raw[:MAX_WHITEOUTS]:
+        try:
+            page = int(item["page"])
+            xs = sorted(min(1.0, max(0.0, float(item[k]))) for k in ("x0", "x1"))
+            ys = sorted(min(1.0, max(0.0, float(item[k]))) for k in ("y0", "y1"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if page < 0 or xs[1] - xs[0] < 0.002 or ys[1] - ys[0] < 0.002:
+            continue
+        boxes.append({"page": page, "x0": xs[0], "y0": ys[0], "x1": xs[1], "y1": ys[1]})
+    return boxes
+
+
+def _apply_whiteouts(doc: fitz.Document, whiteouts: List[dict]) -> int:
+    by_page = {}
+    for box in whiteouts:
+        by_page.setdefault(box["page"], []).append(box)
+
+    applied = 0
+    for pno, boxes in by_page.items():
+        if pno >= doc.page_count:
+            continue
+        page = doc[pno]
+        visible = page.rect
+        rects = []
+        for b in boxes:
+            shown = fitz.Rect(
+                visible.x0 + b["x0"] * visible.width,
+                visible.y0 + b["y0"] * visible.height,
+                visible.x0 + b["x1"] * visible.width,
+                visible.y0 + b["y1"] * visible.height,
+            )
+            rects.append(shown * page.derotation_matrix)
+        try:
+            for rect in rects:
+                page.add_redact_annot(rect, fill=(1, 1, 1))
+            page.apply_redactions(
+                images=fitz.PDF_REDACT_IMAGE_PIXELS,
+                graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+            )
+        except Exception as exc:
+            logger.warning("Redaction failed on page %s, covering instead: %s", pno + 1, exc)
+            for annot in list(page.annots(types=[fitz.PDF_ANNOT_REDACT]) or []):
+                page.delete_annot(annot)
+        # A white box on top guarantees the area is blank even if the
+        # underlying content could not be removed.
+        for rect in rects:
+            page.draw_rect(rect, color=None, fill=(1, 1, 1), overlay=True)
+        applied += len(rects)
+    return applied
+
+
+def _stamp_pdf(
+    source: str,
+    output_path: str,
+    watermark_text: str,
+    footer_png: Optional[bytes],
+    include_footer: bool,
+    whiteouts: Optional[List[dict]] = None,
+):
     doc = fitz.open(source)
     try:
+        if whiteouts:
+            count = _apply_whiteouts(doc, whiteouts)
+            logger.info("Applied %s white-out area(s)", count)
         for page_num, page in enumerate(doc):
             _apply_watermark(page, watermark_text, WATERMARK_OPACITY, WATERMARK_ANGLE_DEGREES)
             if include_footer:
@@ -304,8 +386,9 @@ def process_pdf_enhanced(
     output_path: str,
     project_folder_path: str = "",
     include_footer: bool = True,
+    whiteouts: Optional[List[dict]] = None,
 ):
-    """Add watermark (and optional footer) to every page of a PDF."""
+    """White out requested areas, then add watermark (and optional footer) to every page."""
     start = time.time()
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Input not found: {input_path}")
@@ -324,13 +407,13 @@ def process_pdf_enhanced(
         source = _repair_pdf(input_path)
 
     try:
-        _stamp_pdf(source, output_path, watermark_text, footer_png, include_footer)
+        _stamp_pdf(source, output_path, watermark_text, footer_png, include_footer, whiteouts)
     except Exception as exc:
         if source != input_path or not _needs_repair(exc):
             raise
         logger.warning("Stamp failed on original PDF (%s), repairing and retrying", exc)
         source = _repair_pdf(input_path)
-        _stamp_pdf(source, output_path, watermark_text, footer_png, include_footer)
+        _stamp_pdf(source, output_path, watermark_text, footer_png, include_footer, whiteouts)
     finally:
         if footer_png:
             del footer_png
