@@ -166,8 +166,10 @@ class handler(BaseHTTPRequestHandler):
             dest = resolve_destination(project_name, branding_name, file_type)
             svc = dest["svc"]
 
+            files_kept = []
             if replace_existing:
-                trash_files(svc, dest["file_type_folder_id"])
+                trashed = trash_files(svc, dest["file_type_folder_id"])
+                files_kept = trashed["skipped"]
 
             uploaded = upload_bytes(svc, output, file_name, dest["file_type_folder_id"])
             del output
@@ -186,6 +188,7 @@ class handler(BaseHTTPRequestHandler):
                 "file_size": file_size,
                 "whiteouts": whiteout_count,
                 "pages_removed": pages_removed,
+                "files_kept": files_kept,
             })
 
         except ValueError as e:

@@ -43,6 +43,7 @@ type ProcessResult = {
   file_size?: number;
   whiteouts?: number;
   pages_removed?: number;
+  files_kept?: string[];
   error?: string;
 };
 
@@ -883,6 +884,13 @@ export default function Home() {
                             <span className="wo-badge wo-badge-del" style={{ marginLeft: ".4rem" }}>
                               {r.pages_removed} page(s) removed
                             </span>
+                          )}
+                          {!!r.files_kept?.length && (
+                            <div className="alert alert-warn" style={{ marginTop: ".35rem" }}>
+                              Couldn&apos;t remove {r.files_kept.join(", ")} — the Drive account doesn&apos;t
+                              have permission to change {r.files_kept.length === 1 ? "that file" : "those files"}.
+                              The new file was still uploaded.
+                            </div>
                           )}
                           <div className="caption">📁 {r.output_path}</div>
                           {r.drive_url && (

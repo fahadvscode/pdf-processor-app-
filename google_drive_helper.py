@@ -496,7 +496,17 @@ class DriveManager:
                     body={'trashed': True},
                 ).execute()
 
-            self._execute_with_retries(trash_file, f"Failed to remove '{file_name}'")
+            try:
+                self._execute_with_retries(trash_file, f"Failed to remove '{file_name}'")
+            except Exception as exc:
+                message = str(exc).lower()
+                if (
+                    "insufficientfilepermissions" in message
+                    or "insufficient permissions" in message
+                    or "does not have sufficient permissions" in message
+                ):
+                    continue
+                raise
             deleted_names.append(file_name)
         return deleted_names
     

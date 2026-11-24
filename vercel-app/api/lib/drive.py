@@ -3,10 +3,13 @@ Stateless Google Drive helper for Vercel serverless functions.
 Each function call creates its own service — no shared state.
 """
 
+import logging
 import time
 import socket
 import ssl
 from typing import List, Dict, Optional, Callable
+
+logger = logging.getLogger("drive")
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
@@ -177,17 +180,36 @@ def list_files_in_folder(svc, folder_id: str) -> List[Dict]:
     return files
 
 
-def trash_files(svc, folder_id: str) -> List[str]:
+def _cannot_trash(exc: BaseException) -> bool:
+    """True when Drive refused because this account cannot change that file."""
+    msg = str(exc).lower()
+    return (
+        "insufficientfilepermissions" in msg
+        or "insufficient permissions" in msg
+        or "does not have sufficient permissions" in msg
+    )
+
+
+def trash_files(svc, folder_id: str) -> Dict:
+    """Move files in a folder to trash. Files this account cannot change are skipped."""
     files = list_files_in_folder(svc, folder_id)
     deleted: List[str] = []
+    skipped: List[str] = []
     for f in files:
         fid = f["id"]
-        _retry(
-            lambda fid=fid: svc.files().update(fileId=fid, body={"trashed": True}).execute(),
-            f"trash '{f.get('name', fid)}'",
-        )
-        deleted.append(f.get("name", fid))
-    return deleted
+        name = f.get("name", fid)
+        try:
+            _retry(
+                lambda fid=fid: svc.files().update(fileId=fid, body={"trashed": True}).execute(),
+                f"trash '{name}'",
+            )
+            deleted.append(name)
+        except Exception as exc:
+            if not _cannot_trash(exc):
+                raise
+            logger.warning("Left '%s' in place: %s", name, exc)
+            skipped.append(name)
+    return {"deleted": deleted, "skipped": skipped}
 
 
 def resolve_destination(project_name: str, branding_name: str, file_type: str):
