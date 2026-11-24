@@ -13,9 +13,7 @@ from urllib.parse import urlparse
 import cgi
 import json
 import os
-import shutil
 import sys
-import tempfile
 import time
 import gc
 import requests
@@ -27,15 +25,15 @@ ASSETS_DIR = os.path.join(os.path.dirname(API_DIR), "assets")
 # Put project root on path so ai_enhanced_redactor resolves local footer PNGs
 sys.path.insert(0, API_DIR)
 
-from lib.drive import resolve_destination, trash_files, upload_file, _build_service
+from lib.drive import resolve_destination, trash_files, upload_bytes
 
 
-def _process_pdf(input_path: str, output_path: str, project_folder_path: str, include_footer: bool, whiteouts_raw: str):
-    """Run the redactor. Imported lazily to keep cold starts fast for other endpoints."""
-    from lib.redactor import parse_whiteouts, process_pdf_enhanced
+def _process_pdf(data: bytes, project_folder_path: str, include_footer: bool, whiteouts_raw: str):
+    """Run the redactor in memory. Imported lazily to keep cold starts fast for other endpoints."""
+    from lib.redactor import parse_whiteouts, process_pdf_bytes
     whiteouts = parse_whiteouts(whiteouts_raw)
-    process_pdf_enhanced(input_path, output_path, project_folder_path, include_footer, whiteouts)
-    return len(whiteouts)
+    result = process_pdf_bytes(data, project_folder_path, include_footer, whiteouts)
+    return result, len(whiteouts)
 
 
 def _output_pdf_name(name: str) -> str:
@@ -72,26 +70,13 @@ def _download_blob(url: str) -> bytes:
     return resp.content
 
 
-WORK_ROOT = "/tmp/pdf-work"
-
-
-def _reclaim_tmp() -> None:
-    """Drop our own leftovers from an earlier run on this reused instance.
-
-    Only WORK_ROOT is touched: Vercel keeps the Python packages in /tmp/_vc_deps.
-    """
-    shutil.rmtree(WORK_ROOT, ignore_errors=True)
-    os.makedirs(WORK_ROOT, exist_ok=True)
-
-
 def _public_error(exc: BaseException) -> str:
     msg = str(exc)
     low = msg.lower()
-    if "no space left" in low or "cannot fwrite" in low or "temporary disk" in low:
-        return (
-            "This file is too large for the server's temporary disk. "
-            "Export a smaller PDF (or a lower-resolution image) and try again."
-        )
+    if "no space left" in low or "cannot fwrite" in low:
+        return "The server ran out of disk space while processing this file. Please try again."
+    if isinstance(exc, MemoryError) or "out of memory" in low or "cannot allocate" in low:
+        return "This file is too large to process. Export a smaller PDF and try again."
     return msg
 
 
@@ -161,37 +146,28 @@ class handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "project_name, branding_name, file_type required"})
                 return
 
-            _reclaim_tmp()
-            with tempfile.TemporaryDirectory(dir=WORK_ROOT) as tmp:
-                in_path = os.path.join(tmp, "input.pdf")
-                out_path = os.path.join(tmp, "output.pdf")
+            output, whiteout_count = _process_pdf(
+                pdf_bytes,
+                f"{branding_name}/{project_name}",
+                include_footer,
+                whiteouts_raw,
+            )
+            del pdf_bytes
+            gc.collect()
 
-                with open(in_path, "wb") as f:
-                    f.write(pdf_bytes)
-                del pdf_bytes
-                gc.collect()
+            if not output:
+                self._json(500, {"error": "Processed file was not created"})
+                return
+            file_size = len(output)
 
-                whiteout_count = _process_pdf(
-                    in_path,
-                    out_path,
-                    f"{branding_name}/{project_name}",
-                    include_footer,
-                    whiteouts_raw,
-                )
+            dest = resolve_destination(project_name, branding_name, file_type)
+            svc = dest["svc"]
 
-                if not os.path.exists(out_path):
-                    self._json(500, {"error": "Processed file was not created"})
-                    return
+            if replace_existing:
+                trash_files(svc, dest["file_type_folder_id"])
 
-                file_size = os.path.getsize(out_path)
-
-                dest = resolve_destination(project_name, branding_name, file_type)
-                svc = dest["svc"]
-
-                if replace_existing:
-                    trash_files(svc, dest["file_type_folder_id"])
-
-                uploaded = upload_file(svc, out_path, file_name, dest["file_type_folder_id"])
+            uploaded = upload_bytes(svc, output, file_name, dest["file_type_folder_id"])
+            del output
 
             processing_time = time.time() - start
             gc.collect()

@@ -9,7 +9,6 @@ import os
 import sys
 import gc
 import logging
-import shutil
 import time
 import requests
 from pathlib import Path
@@ -180,10 +179,10 @@ def _needs_repair(exc: BaseException) -> bool:
     )
 
 
-def _probe_pdf(path: str) -> bool:
+def _probe_pdf(data: bytes) -> bool:
     """True when MuPDF can open every page."""
     try:
-        doc = fitz.open(path)
+        doc = fitz.open(stream=data, filetype="pdf")
     except Exception:
         return False
     try:
@@ -201,21 +200,23 @@ def _probe_pdf(path: str) -> bool:
         doc.close()
 
 
-def _repair_with_pikepdf(src: str, dst: str) -> bool:
+def _repair_with_pikepdf(data: bytes) -> Optional[bytes]:
     import pikepdf
 
-    with pikepdf.open(src, attempt_recovery=True) as pdf:
-        pdf.save(dst)
-    return os.path.isfile(dst) and os.path.getsize(dst) > 100 and _probe_pdf(dst)
+    out = io.BytesIO()
+    with pikepdf.open(io.BytesIO(data), attempt_recovery=True) as pdf:
+        pdf.save(out)
+    fixed = out.getvalue()
+    return fixed if len(fixed) > 100 and _probe_pdf(fixed) else None
 
 
-def _repair_with_pypdf(src: str, dst: str) -> bool:
+def _repair_with_pypdf(data: bytes) -> Optional[bytes]:
     from pypdf import PdfReader, PdfWriter
 
     try:
-        reader = PdfReader(src, strict=False)
+        reader = PdfReader(io.BytesIO(data), strict=False)
     except TypeError:
-        reader = PdfReader(src)
+        reader = PdfReader(io.BytesIO(data))
     writer = PdfWriter()
     kept = 0
     for i, page in enumerate(reader.pages):
@@ -225,19 +226,20 @@ def _repair_with_pypdf(src: str, dst: str) -> bool:
         except Exception as exc:
             logger.warning("Dropping unreadable page %s: %s", i + 1, exc)
     if kept < 1:
-        return False
-    with open(dst, "wb") as handle:
-        writer.write(handle)
-    return os.path.isfile(dst) and os.path.getsize(dst) > 100 and _probe_pdf(dst)
+        return None
+    out = io.BytesIO()
+    writer.write(out)
+    fixed = out.getvalue()
+    return fixed if len(fixed) > 100 and _probe_pdf(fixed) else None
 
 
-def _repair_by_raster(src: str, dst: str) -> bool:
+def _repair_by_raster(data: bytes) -> Optional[bytes]:
     """Last resort: redraw each readable page as an image."""
     try:
-        doc = fitz.open(src)
+        doc = fitz.open(stream=data, filetype="pdf")
     except Exception as exc:
         logger.warning("Raster open failed: %s", exc)
-        return False
+        return None
     out = fitz.open()
     kept = 0
     try:
@@ -254,16 +256,15 @@ def _repair_by_raster(src: str, dst: str) -> bool:
             except Exception as exc:
                 logger.warning("Raster page %s failed: %s", i + 1, exc)
         if kept < 1:
-            return False
-        out.save(dst, garbage=1, deflate=True)
-        return _probe_pdf(dst)
+            return None
+        fixed = out.tobytes(garbage=1, deflate=True)
+        return fixed if _probe_pdf(fixed) else None
     finally:
         out.close()
         doc.close()
 
 
-def _repair_pdf(src: str) -> str:
-    dst = src + ".repaired.pdf"
+def _repair_pdf(data: bytes) -> bytes:
     errors = []
     for name, fn in (
         ("pikepdf", _repair_with_pikepdf),
@@ -271,9 +272,10 @@ def _repair_pdf(src: str) -> str:
         ("raster", _repair_by_raster),
     ):
         try:
-            if fn(src, dst):
+            fixed = fn(data)
+            if fixed:
                 logger.info("Repaired PDF with %s", name)
-                return dst
+                return fixed
             errors.append(f"{name}: output still unreadable")
         except Exception as exc:
             errors.append(f"{name}: {exc}")
@@ -353,70 +355,15 @@ def _apply_whiteouts(doc: fitz.Document, whiteouts: List[dict]) -> int:
     return applied
 
 
-_DISK_MSG = (
-    "This file is too large for the server's temporary disk. "
-    "Export a smaller PDF (or a lower-resolution image) and try again."
-)
-
-
-def _is_disk_full(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    return "no space left" in msg or "cannot fwrite" in msg or "errno 28" in msg
-
-
-def _save_stamped(doc: fitz.Document, source: str, output_path: str, rewrite: bool) -> None:
-    """Append the watermark, or rewrite when content has to be removed.
-
-    A full rewrite decompresses a site plan and fills the small temporary disk
-    on the server (`cannot fwrite: No space left on device`). Incremental save
-    only writes the new watermark and footer.
-    """
-    if not rewrite:
-        try:
-            doc.saveIncr()
-        except Exception as exc:
-            if _is_disk_full(exc):
-                raise RuntimeError(_DISK_MSG) from exc
-            logger.warning("Incremental save failed (%s); rewriting the PDF", exc)
-        else:
-            if os.path.abspath(source) != os.path.abspath(output_path):
-                os.replace(source, output_path)
-            return
-    _save_rewritten(doc, source, output_path)
-
-
-def _save_rewritten(doc: fitz.Document, source: str, output_path: str) -> None:
-    src_size = os.path.getsize(source) if os.path.isfile(source) else 0
-    try:
-        free = shutil.disk_usage(os.path.dirname(output_path) or "/tmp").free
-    except Exception:
-        free = 0
-    if src_size and free and free < src_size + 48 * 1024 * 1024:
-        raise RuntimeError(_DISK_MSG)
-    partial = output_path + ".partial"
-    try:
-        doc.save(partial, garbage=1, deflate=True)
-        os.replace(partial, output_path)
-    except Exception as exc:
-        if os.path.isfile(partial):
-            try:
-                os.remove(partial)
-            except OSError:
-                pass
-        if _is_disk_full(exc):
-            raise RuntimeError(_DISK_MSG) from exc
-        raise
-
-
 def _stamp_pdf(
-    source: str,
-    output_path: str,
+    data: bytes,
     watermark_text: str,
     footer_png: Optional[bytes],
     include_footer: bool,
     whiteouts: Optional[List[dict]] = None,
-):
-    doc = fitz.open(source)
+) -> bytes:
+    """Everything happens in memory; the server's temporary disk is too small for site plans."""
+    doc = fitz.open(stream=data, filetype="pdf")
     try:
         if whiteouts:
             count = _apply_whiteouts(doc, whiteouts)
@@ -427,10 +374,9 @@ def _stamp_pdf(
                 _insert_footer(page, footer_png)
             if (page_num + 1) % 10 == 0:
                 gc.collect()
-        # White-out has to rewrite the file so the covered text is actually gone.
-        # A plain watermark is appended, which keeps a large site plan from
-        # filling the temporary disk.
-        _save_stamped(doc, source, output_path, rewrite=bool(whiteouts))
+        # garbage=1 drops the content a white-out removed. Without white-out,
+        # existing streams are copied as they are, so the file stays its size.
+        return doc.tobytes(garbage=1 if whiteouts else 0, deflate=True)
     finally:
         doc.close()
         del doc
@@ -577,42 +523,38 @@ def image_bytes_to_pdf(data: bytes) -> bytes:
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
-def process_pdf_enhanced(
-    input_path: str,
-    output_path: str,
+def process_pdf_bytes(
+    data: bytes,
     project_folder_path: str = "",
     include_footer: bool = True,
     whiteouts: Optional[List[dict]] = None,
-):
+) -> bytes:
     """White out requested areas, then add watermark (and optional footer) to every page."""
     start = time.time()
-    if not os.path.exists(input_path):
-        raise FileNotFoundError(f"Input not found: {input_path}")
-    out_dir = os.path.dirname(output_path)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
+    if not data:
+        raise ValueError("Uploaded file was empty")
 
     watermark_text, footer_url = _get_branding_config(project_folder_path)
     footer_png = _load_footer_bytes(watermark_text, footer_url) if include_footer else None
     if include_footer and not footer_png:
         logger.error("Footer image could not be loaded")
 
-    source = input_path
+    source = data
     if not _probe_pdf(source):
-        logger.warning("PDF failed to open cleanly, repairing first: %s", input_path)
-        source = _repair_pdf(input_path)
+        logger.warning("PDF failed to open cleanly, repairing first")
+        source = _repair_pdf(data)
 
     try:
-        _stamp_pdf(source, output_path, watermark_text, footer_png, include_footer, whiteouts)
+        result = _stamp_pdf(source, watermark_text, footer_png, include_footer, whiteouts)
     except Exception as exc:
-        if source != input_path or not _needs_repair(exc):
+        if source is not data or not _needs_repair(exc):
             raise
         logger.warning("Stamp failed on original PDF (%s), repairing and retrying", exc)
-        source = _repair_pdf(input_path)
-        _stamp_pdf(source, output_path, watermark_text, footer_png, include_footer, whiteouts)
+        source = _repair_pdf(data)
+        result = _stamp_pdf(source, watermark_text, footer_png, include_footer, whiteouts)
     finally:
-        if footer_png:
-            del footer_png
+        footer_png = None
         gc.collect()
 
-    logger.info("Processed %s in %.2fs", input_path, time.time() - start)
+    logger.info("Processed %.1f MB in %.2fs", len(data) / 1e6, time.time() - start)
+    return result

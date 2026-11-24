@@ -8,7 +8,7 @@ import socket
 import ssl
 from typing import List, Dict, Optional, Callable
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaIoBaseUpload
 
 from .credentials import get_drive_credentials, DRIVE_INPUT_FOLDER_ID, DRIVE_OUTPUT_FOLDER_ID
 
@@ -237,18 +237,19 @@ def inspect_output(project_name: str, branding_name: str, file_type: str) -> Dic
         }
 
 
-def upload_file(svc, local_path: str, file_name: str, folder_id: str) -> Dict:
-    import os
+def upload_bytes(svc, data: bytes, file_name: str, folder_id: str) -> Dict:
+    import io
 
     meta = {"name": file_name, "parents": [folder_id]}
-    media = MediaFileUpload(local_path, mimetype="application/pdf", resumable=True)
-    uploaded = _retry(
-        lambda: svc.files().create(body=meta, media_body=media, fields="id, name, webViewLink, size").execute(),
-        f"upload '{file_name}'",
-    )
+
+    def create():
+        media = MediaIoBaseUpload(io.BytesIO(data), mimetype="application/pdf", resumable=True)
+        return svc.files().create(body=meta, media_body=media, fields="id, name, webViewLink, size").execute()
+
+    uploaded = _retry(create, f"upload '{file_name}'")
     return {
         "id": uploaded["id"],
         "name": uploaded["name"],
         "webViewLink": uploaded.get("webViewLink", f"https://drive.google.com/file/d/{uploaded['id']}/view"),
-        "size": uploaded.get("size", os.path.getsize(local_path)),
+        "size": uploaded.get("size", len(data)),
     }
