@@ -82,7 +82,20 @@ def _download_image_bytes(url: str) -> Optional[bytes]:
         return None
 
 
+_FOOTER_CACHE: dict = {}
+
+
 def _load_footer_bytes(watermark_text: str, footer_image_url: str) -> Optional[bytes]:
+    key = (watermark_text, footer_image_url)
+    if key not in _FOOTER_CACHE:
+        data = _read_footer_bytes(watermark_text, footer_image_url)
+        if not data:
+            return None
+        _FOOTER_CACHE[key] = data
+    return _FOOTER_CACHE[key]
+
+
+def _read_footer_bytes(watermark_text: str, footer_image_url: str) -> Optional[bytes]:
     if watermark_text == FAHAD_WATERMARK_TEXT and FAHAD_FOOTER_LOCAL_PATH.exists():
         return FAHAD_FOOTER_LOCAL_PATH.read_bytes()
     if watermark_text == GTA_LOWRISE_WATERMARK_TEXT and GTA_LOWRISE_FOOTER_LOCAL_PATH.exists():
@@ -105,7 +118,17 @@ def _font_candidates() -> List[str]:
     return candidates
 
 
+_FONT: Optional[fitz.Font] = None
+
+
 def _load_font() -> fitz.Font:
+    global _FONT
+    if _FONT is None:
+        _FONT = _find_font()
+    return _FONT
+
+
+def _find_font() -> fitz.Font:
     for path in _font_candidates():
         if not path or not os.path.isfile(path):
             continue
@@ -316,6 +339,37 @@ def parse_whiteouts(raw) -> List[dict]:
     return boxes
 
 
+def parse_delete_pages(raw) -> List[int]:
+    """0-based page numbers to drop, as shown in the browser."""
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        import json
+        raw = json.loads(raw)
+    if not isinstance(raw, list):
+        raise ValueError("delete_pages must be a list")
+    pages = set()
+    for item in raw[:5000]:
+        try:
+            page = int(item)
+        except (TypeError, ValueError):
+            continue
+        if page >= 0:
+            pages.add(page)
+    return sorted(pages)
+
+
+def _delete_pages(doc: fitz.Document, pages: List[int]) -> int:
+    drop = {p for p in pages if p < doc.page_count}
+    if not drop:
+        return 0
+    keep = [p for p in range(doc.page_count) if p not in drop]
+    if not keep:
+        raise ValueError("You can't remove every page of a PDF")
+    doc.select(keep)
+    return len(drop)
+
+
 def _apply_whiteouts(doc: fitz.Document, whiteouts: List[dict]) -> int:
     by_page = {}
     for box in whiteouts:
@@ -361,22 +415,27 @@ def _stamp_pdf(
     footer_png: Optional[bytes],
     include_footer: bool,
     whiteouts: Optional[List[dict]] = None,
+    delete_pages: Optional[List[int]] = None,
 ) -> bytes:
     """Everything happens in memory; the server's temporary disk is too small for site plans."""
     doc = fitz.open(stream=data, filetype="pdf")
     try:
+        # Box page numbers refer to the original pages, so white out before deleting.
         if whiteouts:
             count = _apply_whiteouts(doc, whiteouts)
             logger.info("Applied %s white-out area(s)", count)
+        removed = _delete_pages(doc, delete_pages or [])
+        if removed:
+            logger.info("Removed %s page(s)", removed)
         for page_num, page in enumerate(doc):
             _apply_watermark(page, watermark_text, WATERMARK_OPACITY, WATERMARK_ANGLE_DEGREES)
             if include_footer:
                 _insert_footer(page, footer_png)
             if (page_num + 1) % 10 == 0:
                 gc.collect()
-        # garbage=1 drops the content a white-out removed. Without white-out,
-        # existing streams are copied as they are, so the file stays its size.
-        return doc.tobytes(garbage=1 if whiteouts else 0, deflate=True)
+        # garbage=1 drops what a white-out or page deletion removed, so it isn't
+        # left hidden in the file. Otherwise streams are copied as they are.
+        return doc.tobytes(garbage=1 if (whiteouts or removed) else 0, deflate=True)
     finally:
         doc.close()
         del doc
@@ -528,8 +587,9 @@ def process_pdf_bytes(
     project_folder_path: str = "",
     include_footer: bool = True,
     whiteouts: Optional[List[dict]] = None,
+    delete_pages: Optional[List[int]] = None,
 ) -> bytes:
-    """White out requested areas, then add watermark (and optional footer) to every page."""
+    """White out requested areas, drop deleted pages, then add watermark (and optional footer) to every page."""
     start = time.time()
     if not data:
         raise ValueError("Uploaded file was empty")
@@ -545,13 +605,13 @@ def process_pdf_bytes(
         source = _repair_pdf(data)
 
     try:
-        result = _stamp_pdf(source, watermark_text, footer_png, include_footer, whiteouts)
+        result = _stamp_pdf(source, watermark_text, footer_png, include_footer, whiteouts, delete_pages)
     except Exception as exc:
         if source is not data or not _needs_repair(exc):
             raise
         logger.warning("Stamp failed on original PDF (%s), repairing and retrying", exc)
         source = _repair_pdf(data)
-        result = _stamp_pdf(source, watermark_text, footer_png, include_footer, whiteouts)
+        result = _stamp_pdf(source, watermark_text, footer_png, include_footer, whiteouts, delete_pages)
     finally:
         footer_png = None
         gc.collect()

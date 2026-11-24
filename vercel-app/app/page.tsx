@@ -1,10 +1,22 @@
 "use client";
 import { useState, useRef, useCallback, useEffect } from "react";
 import dynamic from "next/dynamic";
-import type { Whiteout } from "./WhiteoutEditor";
+import type { FileEdits } from "./WhiteoutEditor";
+import EditorBoundary from "./EditorBoundary";
 import { FILE_ACCEPT, prepareUploads, type UploadFile } from "./prepareUpload";
 
-const WhiteoutEditor = dynamic(() => import("./WhiteoutEditor"), { ssr: false });
+const WhiteoutEditor = dynamic(() => import("./WhiteoutEditor"), {
+  ssr: false,
+  loading: () => (
+    <div className="wo-backdrop">
+      <p className="wo-loading">
+        <span className="spinner" /> Opening editor…
+      </p>
+    </div>
+  ),
+});
+
+const NO_EDITS: FileEdits = { boxes: [], deletedPages: [] };
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -30,6 +42,7 @@ type ProcessResult = {
   processing_time?: number;
   file_size?: number;
   whiteouts?: number;
+  pages_removed?: number;
   error?: string;
 };
 
@@ -53,6 +66,40 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 const DIRECT_UPLOAD_LIMIT = 4_000_000;
+
+class HttpError extends Error {
+  constructor(message: string, public status: number) {
+    super(message);
+  }
+}
+
+/** Retry only when the request never reached the processor (network drop, 502/503). */
+async function processWithRetry(build: () => Promise<FormData>, attempts = 3): Promise<ProcessResult> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    let status = 0;
+    try {
+      const res = await fetch("/api/process", { method: "POST", body: await build() });
+      status = res.status;
+      const text = await res.text();
+      let json: any = {};
+      try {
+        json = text ? JSON.parse(text) : {};
+      } catch {
+        throw new HttpError(text.replace(/\s+/g, " ").trim().slice(0, 240) || `HTTP ${status}`, status);
+      }
+      if (!res.ok) throw new HttpError(json.error || `HTTP ${status}`, status);
+      return json as ProcessResult;
+    } catch (e) {
+      lastError = e;
+      const retryable = e instanceof TypeError || status === 502 || status === 503;
+      if (!retryable || attempt === attempts) break;
+      await new Promise((r) => setTimeout(r, 1500 * attempt));
+    }
+  }
+  if (lastError instanceof TypeError) throw new Error("Network problem — check your connection and try again");
+  throw lastError instanceof Error ? lastError : new Error("Processing failed");
+}
 
 function fileKey(file: File): string {
   return `${file.name}:${file.size}:${file.lastModified}`;
@@ -103,16 +150,16 @@ export default function Home() {
   const [statusMsg, setStatusMsg] = useState("");
   const [results, setResults] = useState<ProcessResult[]>([]);
   const [processError, setProcessError] = useState("");
-  const [whiteouts, setWhiteouts] = useState<Record<string, Whiteout[]>>({});
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [edits, setEdits] = useState<Record<string, FileEdits>>({});
+  const [editingKey, setEditingKey] = useState<string | null>(null);
 
   useEffect(() => {
     addGeneration.current += 1;
     setPrepareLabel("");
     setAddError("");
     setFiles([]);
-    setWhiteouts({});
-    setEditingIndex(null);
+    setEdits({});
+    setEditingKey(null);
     setResults([]);
     setProcessError("");
     setProgress(0);
@@ -289,91 +336,109 @@ export default function Home() {
     setResults([]);
     setProcessError("");
 
-    const jobs: { file: File; branding: Branding }[] = [];
-    for (const b of selectedBrandings) {
-      for (const f of files) {
-        jobs.push({ file: f, branding: b });
-      }
-    }
-    const total = jobs.length;
+    const total = selectedBrandings.length * files.length;
     const collected: ProcessResult[] = [];
-    const blobUrls = new Map<string, string>();
-    const usesLeft = new Map<string, number>();
-    for (const job of jobs) {
-      const key = fileKey(job.file);
-      usesLeft.set(key, (usesLeft.get(key) || 0) + 1);
-    }
+    const blobUploads = new Map<string, Promise<string>>();
+    const active = new Map<string, string>();
     let done = 0;
 
-    try {
-      for (const job of jobs) {
-        const shouldReplace = replaceAll || !!replaceMap[job.branding.id];
-        const isFirstFileForBranding = done === 0 || jobs[done - 1]?.branding.id !== job.branding.id;
-        const key = fileKey(job.file);
-        const large = job.file.size > DIRECT_UPLOAD_LIMIT;
+    const showStatus = () => {
+      const parts = Array.from(active.values());
+      setStatusMsg(parts.length ? `[${Math.min(done + 1, total)}/${total}] ${parts.join(" · ")}` : "");
+    };
 
-        setStatusMsg(
-          `[${done + 1}/${total}] ${job.branding.name} — ${job.file.name}` +
-            (large ? " (large file)" : "")
-        );
+    const blobFor = (file: UploadFile, key: string) => {
+      let pending = blobUploads.get(key);
+      if (!pending) {
+        pending = (async () => {
+          const { upload } = await import("@vercel/blob/client");
+          const blob = await upload(file.name, file, {
+            access: "public",
+            handleUploadUrl: "/api/upload",
+            contentType: file.type || "application/pdf",
+            multipart: true,
+            clientPayload: JSON.stringify({ password: passwordRef.current }),
+          });
+          return blob.url;
+        })();
+        pending.catch(() => blobUploads.delete(key));
+        blobUploads.set(key, pending);
+      }
+      return pending;
+    };
 
-        const form = new FormData();
-        form.append("project_name", selectedProject.name);
-        form.append("branding_name", job.branding.name);
-        form.append("file_type", selectedType);
-        form.append("include_footer", includeFooter ? "1" : "0");
-        form.append("replace_existing", shouldReplace && isFirstFileForBranding ? "1" : "0");
-        form.append("whiteouts", JSON.stringify(whiteouts[key] || []));
-
+    // Brandings run side by side; files within one branding stay in order so
+    // "replace existing" clears the folder before that branding's first upload.
+    const runBranding = async (branding: Branding) => {
+      const shouldReplace = replaceAll || !!replaceMap[branding.id];
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const key = fileKey(file);
+        const edit = edits[key] || NO_EDITS;
+        const label = `${branding.name} — ${file.sourceName || file.name}`;
+        active.set(branding.id, label);
+        showStatus();
         try {
-          if (large) {
-            let blobUrl = blobUrls.get(key);
-            if (!blobUrl) {
-              setStatusMsg(`[${done + 1}/${total}] Uploading ${job.file.name}…`);
-              const { upload } = await import("@vercel/blob/client");
-              const blob = await upload(job.file.name, job.file, {
-                access: "public",
-                handleUploadUrl: "/api/upload",
-                contentType: "application/pdf",
-                multipart: true,
-                clientPayload: JSON.stringify({ password: passwordRef.current }),
-              });
-              blobUrl = blob.url;
-              blobUrls.set(key, blobUrl);
+          const build = async () => {
+            const form = new FormData();
+            form.append("project_name", selectedProject.name);
+            form.append("branding_name", branding.name);
+            form.append("file_type", selectedType);
+            form.append("include_footer", includeFooter ? "1" : "0");
+            form.append("replace_existing", shouldReplace && i === 0 ? "1" : "0");
+            form.append("whiteouts", JSON.stringify(edit.boxes));
+            form.append("delete_pages", JSON.stringify(edit.deletedPages));
+            if (file.size > DIRECT_UPLOAD_LIMIT) {
+              active.set(branding.id, `Uploading ${file.sourceName || file.name}…`);
+              showStatus();
+              form.append("blob_url", await blobFor(file, key));
+              form.append("file_name", file.name);
+              form.append("delete_blob", "0");
+              active.set(branding.id, label);
+              showStatus();
+            } else {
+              form.append("file", file);
             }
-            const left = (usesLeft.get(key) || 1) - 1;
-            usesLeft.set(key, left);
-            form.append("blob_url", blobUrl);
-            form.append("file_name", job.file.name);
-            form.append("delete_blob", left === 0 ? "1" : "0");
-            setStatusMsg(`[${done + 1}/${total}] ${job.branding.name} — ${job.file.name}`);
-          } else {
-            form.append("file", job.file);
-          }
-
-          const result = await api<ProcessResult>("/api/process", {
-            method: "POST",
-            body: form,
-          });
-          collected.push(result);
+            return form;
+          };
+          const result = await processWithRetry(build);
+          collected.push({ ...result, file_name: result.file_name || file.name });
         } catch (e: any) {
-          collected.push({
-            branding_name: job.branding.name,
-            file_name: job.file.name,
-            error: e.message,
-          });
+          collected.push({ branding_name: branding.name, file_name: file.sourceName || file.name, error: e.message });
         }
         done++;
         setProgress(done / total);
+        showStatus();
       }
+      active.delete(branding.id);
+      showStatus();
+    };
+
+    try {
+      await Promise.all(selectedBrandings.map(runBranding));
+      const order = new Map(selectedBrandings.map((b, i) => [b.name, i]));
+      collected.sort((a, b) => (order.get(a.branding_name) ?? 0) - (order.get(b.branding_name) ?? 0));
       setResults(collected);
     } catch (e: any) {
       setProcessError(e.message);
     } finally {
+      const urls = await Promise.all(
+        Array.from(blobUploads.values()).map((p) => p.catch(() => ""))
+      );
+      const toDelete = urls.filter(Boolean);
+      if (toDelete.length) {
+        fetch("/api/upload", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: passwordRef.current, urls: toDelete }),
+        }).catch(() => {});
+      }
       setProcessing(false);
       setStatusMsg("");
     }
-  }, [selectedProject, selectedBrandings, selectedType, files, includeFooter, replaceAll, replaceMap, whiteouts]);
+  }, [selectedProject, selectedBrandings, selectedType, files, includeFooter, replaceAll, replaceMap, edits]);
+
+  const editingFile = editingKey ? files.find((f) => fileKey(f) === editingKey) : undefined;
 
   /* ---- filtered projects ---- */
   const filtered = search
@@ -463,7 +528,7 @@ export default function Home() {
               setPrepareLabel("");
               setAddError("");
               setFiles([]);
-              setWhiteouts({});
+              setEdits({});
               setResults([]);
             }}
             style={{ marginTop: ".4rem" }}
@@ -696,63 +761,76 @@ export default function Home() {
                   <ul className="file-list">
                     {files.map((f, i) => {
                       const key = fileKey(f);
-                      const count = whiteouts[key]?.length || 0;
+                      const edit = edits[key] || NO_EDITS;
+                      const boxCount = edit.boxes.length;
+                      const removed = edit.deletedPages.length;
+                      const changed = boxCount > 0 || removed > 0;
                       const label = f.sourceName || f.name;
                       return (
                         <li key={`${key}-${i}`} className="file-row">
-                          <span className="name" title={f.sourceName ? `${f.sourceName} → ${f.name}` : f.name}>
-                            {label}{" "}
-                            <span className="caption">
-                              ({(f.size / 1024 / 1024).toFixed(2)} MB{f.sourceName ? ", image" : ""})
+                          <div className="file-info">
+                            <span className="name" title={f.sourceName ? `${f.sourceName} → ${f.name}` : f.name}>
+                              {label}
                             </span>
-                          </span>
-                          {count > 0 && <span className="wo-badge">{count} area(s) hidden</span>}
-                          <button
-                            className="btn-sm btn-whiteout"
-                            disabled={processing}
-                            onClick={() => setEditingIndex(i)}
-                          >
-                            ✏️ {count ? "Edit white-out" : "White out"}
-                          </button>
-                          <button
-                            className="btn-sm btn-outline"
-                            disabled={processing}
-                            aria-label={`Remove ${label}`}
-                            onClick={() => {
-                              const remaining = files.filter((_, j) => j !== i);
-                              setFiles(remaining);
-                              if (!remaining.some((r) => fileKey(r) === key)) {
-                                setWhiteouts((w) => {
-                                  const next = { ...w };
-                                  delete next[key];
-                                  return next;
-                                });
-                              }
-                            }}
-                          >
-                            ✕
-                          </button>
+                            <span className="file-meta">
+                              <span className="caption">
+                                {(f.size / 1024 / 1024).toFixed(2)} MB{f.sourceName ? " · image" : ""}
+                              </span>
+                              {boxCount > 0 && <span className="wo-badge">{boxCount} area(s) hidden</span>}
+                              {removed > 0 && <span className="wo-badge wo-badge-del">{removed} page(s) removed</span>}
+                            </span>
+                          </div>
+                          <div className="file-actions">
+                            <button
+                              className="btn-sm btn-whiteout"
+                              disabled={processing}
+                              onClick={() => setEditingKey(key)}
+                            >
+                              ✏️ {changed ? "Edit" : "White out / pages"}
+                            </button>
+                            <button
+                              className="btn-sm btn-outline"
+                              disabled={processing}
+                              aria-label={`Remove ${label}`}
+                              onClick={() => {
+                                const remaining = files.filter((_, j) => j !== i);
+                                setFiles(remaining);
+                                if (!remaining.some((r) => fileKey(r) === key)) {
+                                  setEdits((w) => {
+                                    const next = { ...w };
+                                    delete next[key];
+                                    return next;
+                                  });
+                                }
+                              }}
+                            >
+                              ✕
+                            </button>
+                          </div>
                         </li>
                       );
                     })}
                   </ul>
 
-                  {editingIndex !== null && files[editingIndex] && (
-                    <WhiteoutEditor
-                      file={files[editingIndex]}
-                      initial={whiteouts[fileKey(files[editingIndex])] || []}
-                      onClose={() => setEditingIndex(null)}
-                      onSave={(boxes) => {
-                        const key = fileKey(files[editingIndex]);
-                        setWhiteouts((w) => {
-                          const next = { ...w };
-                          if (boxes.length) next[key] = boxes;
-                          else delete next[key];
-                          return next;
-                        });
-                        setEditingIndex(null);
-                      }}
-                    />
+                  {editingFile && editingKey && (
+                    <EditorBoundary onClose={() => setEditingKey(null)}>
+                      <WhiteoutEditor
+                        key={editingKey}
+                        file={editingFile}
+                        initial={edits[editingKey] || NO_EDITS}
+                        onClose={() => setEditingKey(null)}
+                        onSave={(next) => {
+                          const key = editingKey;
+                          setEdits((w) => {
+                            const copy = { ...w };
+                            if (next.boxes.length || next.deletedPages.length) copy[key] = next;
+                            else delete copy[key];
+                            return copy;
+                          });
+                          setEditingKey(null);
+                        }}
+                      />
+                    </EditorBoundary>
                   )}
 
                   <button
@@ -799,6 +877,11 @@ export default function Home() {
                           {!!r.whiteouts && (
                             <span className="wo-badge" style={{ marginLeft: ".4rem" }}>
                               {r.whiteouts} area(s) whited out
+                            </span>
+                          )}
+                          {!!r.pages_removed && (
+                            <span className="wo-badge wo-badge-del" style={{ marginLeft: ".4rem" }}>
+                              {r.pages_removed} page(s) removed
                             </span>
                           )}
                           <div className="caption">📁 {r.output_path}</div>

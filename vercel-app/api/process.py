@@ -28,12 +28,13 @@ sys.path.insert(0, API_DIR)
 from lib.drive import resolve_destination, trash_files, upload_bytes
 
 
-def _process_pdf(data: bytes, project_folder_path: str, include_footer: bool, whiteouts_raw: str):
+def _process_pdf(data: bytes, project_folder_path: str, include_footer: bool, whiteouts_raw: str, delete_raw: str):
     """Run the redactor in memory. Imported lazily to keep cold starts fast for other endpoints."""
-    from lib.redactor import parse_whiteouts, process_pdf_bytes
+    from lib.redactor import parse_delete_pages, parse_whiteouts, process_pdf_bytes
     whiteouts = parse_whiteouts(whiteouts_raw)
-    result = process_pdf_bytes(data, project_folder_path, include_footer, whiteouts)
-    return result, len(whiteouts)
+    delete_pages = parse_delete_pages(delete_raw)
+    result = process_pdf_bytes(data, project_folder_path, include_footer, whiteouts, delete_pages)
+    return result, len(whiteouts), len(delete_pages)
 
 
 def _output_pdf_name(name: str) -> str:
@@ -122,6 +123,7 @@ class handler(BaseHTTPRequestHandler):
             include_footer = form.getfirst("include_footer", "1") == "1"
             replace_existing = form.getfirst("replace_existing", "0") == "1"
             whiteouts_raw = form.getfirst("whiteouts", "") or ""
+            delete_raw = form.getfirst("delete_pages", "") or ""
             blob_url = (form.getfirst("blob_url", "") or "").strip()
             delete_blob = form.getfirst("delete_blob", "0") == "1"
 
@@ -146,11 +148,12 @@ class handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "project_name, branding_name, file_type required"})
                 return
 
-            output, whiteout_count = _process_pdf(
+            output, whiteout_count, pages_removed = _process_pdf(
                 pdf_bytes,
                 f"{branding_name}/{project_name}",
                 include_footer,
                 whiteouts_raw,
+                delete_raw,
             )
             del pdf_bytes
             gc.collect()
@@ -182,6 +185,7 @@ class handler(BaseHTTPRequestHandler):
                 "processing_time": round(processing_time, 2),
                 "file_size": file_size,
                 "whiteouts": whiteout_count,
+                "pages_removed": pages_removed,
             })
 
         except ValueError as e:

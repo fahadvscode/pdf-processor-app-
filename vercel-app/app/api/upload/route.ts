@@ -1,3 +1,4 @@
+import { del } from "@vercel/blob";
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { timingSafeEqual } from "crypto";
 import { NextResponse } from "next/server";
@@ -56,4 +57,30 @@ export async function POST(request: Request): Promise<NextResponse> {
     const message = error instanceof Error ? error.message : "Upload rejected";
     return NextResponse.json({ error: message }, { status: 400 });
   }
+}
+
+/** Remove temporary uploads once every branding has used them. */
+export async function DELETE(request: Request): Promise<NextResponse> {
+  let body: { password?: string; urls?: unknown } = {};
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+  }
+  if (!passwordsMatch(body.password || "", process.env.APP_PASSWORD || "")) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const urls = (Array.isArray(body.urls) ? body.urls : [])
+    .filter((u): u is string => typeof u === "string")
+    .filter((u) => {
+      try {
+        const { protocol, hostname } = new URL(u);
+        return protocol === "https:" && hostname.endsWith(".blob.vercel-storage.com");
+      } catch {
+        return false;
+      }
+    })
+    .slice(0, 100);
+  if (urls.length) await del(urls);
+  return NextResponse.json({ deleted: urls.length });
 }
