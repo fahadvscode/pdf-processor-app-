@@ -2,6 +2,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import dynamic from "next/dynamic";
 import type { Whiteout } from "./WhiteoutEditor";
+import { FILE_ACCEPT, prepareUploads, type UploadFile } from "./prepareUpload";
 
 const WhiteoutEditor = dynamic(() => import("./WhiteoutEditor"), { ssr: false });
 
@@ -91,8 +92,12 @@ export default function Home() {
   const [replaceMap, setReplaceMap] = useState<Record<string, boolean>>({});
 
   /* upload & process */
-  const [files, setFiles] = useState<File[]>([]);
+  const [files, setFiles] = useState<UploadFile[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [prepareLabel, setPrepareLabel] = useState("");
+  const [addError, setAddError] = useState("");
+  const addingRef = useRef(false);
+  const addGeneration = useRef(0);
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [statusMsg, setStatusMsg] = useState("");
@@ -102,6 +107,9 @@ export default function Home() {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
 
   useEffect(() => {
+    addGeneration.current += 1;
+    setPrepareLabel("");
+    setAddError("");
     setFiles([]);
     setWhiteouts({});
     setEditingIndex(null);
@@ -111,6 +119,41 @@ export default function Home() {
     setStatusMsg("");
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [selectedType]);
+
+  const addIncoming = useCallback(
+    async (list: File[]) => {
+      if (!list.length || processing || addingRef.current) return;
+      addingRef.current = true;
+      const generation = addGeneration.current;
+      setAddError("");
+      setPrepareLabel("Checking files…");
+      try {
+        const { files: ready, skipped } = await prepareUploads(
+          list,
+          (label) => {
+            if (addGeneration.current === generation) setPrepareLabel(label);
+          },
+          () => addGeneration.current !== generation
+        );
+        if (addGeneration.current !== generation) return;
+        const room = Math.max(0, 50 - files.length);
+        const allowed = ready.slice(0, room);
+        if (ready.length > allowed.length) {
+          skipped.push(`${ready.length - allowed.length} over the 50 file limit`);
+        }
+        if (allowed.length) setFiles((prev) => [...prev, ...allowed].slice(0, 50));
+        if (skipped.length) {
+          const shown = skipped.slice(0, 4).join(", ");
+          const extra = skipped.length > 4 ? ` and ${skipped.length - 4} more` : "";
+          setAddError(`Skipped: ${shown}${extra}`);
+        }
+      } finally {
+        addingRef.current = false;
+        if (addGeneration.current === generation) setPrepareLabel("");
+      }
+    },
+    [processing, files.length]
+  );
 
   /* ---- auth ---- */
   const doLogin = useCallback(async () => {
@@ -410,12 +453,15 @@ export default function Home() {
           <select
             value={selectedProject?.id || ""}
             onChange={(e) => {
+              addGeneration.current += 1;
               const p = projects.find((x) => x.id === e.target.value) || null;
               setSelectedProject(p);
               setSelectedBrandings([]);
               setFileTypes([]);
               setSelectedType("");
               setFolderStatuses([]);
+              setPrepareLabel("");
+              setAddError("");
               setFiles([]);
               setWhiteouts({});
               setResults([]);
@@ -593,32 +639,37 @@ export default function Home() {
           {/* Step 6: Upload */}
           {selectedType && (
             <>
-              <h2>6️⃣ Upload PDFs</h2>
+              <h2>6️⃣ Upload PDFs or images</h2>
               <div
                 className={`file-drop ${files.length ? "active" : ""}`}
-                onClick={() => fileInputRef.current?.click()}
-                onDragOver={(e) => e.preventDefault()}
+                onClick={() => {
+                  if (!prepareLabel && !processing) fileInputRef.current?.click();
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "copy";
+                }}
                 onDrop={(e) => {
                   e.preventDefault();
-                  const dropped = Array.from(e.dataTransfer.files).filter((f) =>
-                    f.name.toLowerCase().endsWith(".pdf")
-                  );
-                  setFiles((prev) => [...prev, ...dropped]);
+                  void addIncoming(Array.from(e.dataTransfer.files));
                 }}
               >
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".pdf"
+                  accept={FILE_ACCEPT}
                   multiple
                   onChange={(e) => {
-                    const selected = Array.from(e.target.files || []);
-                    setFiles((prev) => [...prev, ...selected]);
+                    void addIncoming(Array.from(e.target.files || []));
                     e.target.value = "";
                   }}
                 />
-                {files.length === 0 ? (
-                  <p>📄 Click or drag PDFs here (up to 50)</p>
+                {prepareLabel ? (
+                  <p>
+                    <span className="spinner" /> {prepareLabel}
+                  </p>
+                ) : files.length === 0 ? (
+                  <p>📄 Click or drag PDFs or images here (up to 50)</p>
                 ) : (
                   <p>
                     ✅ {files.length} file(s) —{" "}
@@ -627,6 +678,15 @@ export default function Home() {
                   </p>
                 )}
               </div>
+              <p className="caption" style={{ marginTop: ".4rem" }}>
+                JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, AVIF and SVG are turned into a PDF first.
+                White-out, watermark and footer then work the same way on every branding.
+              </p>
+              {addError && (
+                <div className="alert alert-error" style={{ marginTop: ".4rem" }}>
+                  {addError}
+                </div>
+              )}
               {files.length > 0 && (
                 <>
                   <p className="caption" style={{ marginTop: ".5rem" }}>
@@ -637,11 +697,14 @@ export default function Home() {
                     {files.map((f, i) => {
                       const key = fileKey(f);
                       const count = whiteouts[key]?.length || 0;
+                      const label = f.sourceName || f.name;
                       return (
                         <li key={`${key}-${i}`} className="file-row">
-                          <span className="name" title={f.name}>
-                            {f.name}{" "}
-                            <span className="caption">({(f.size / 1024 / 1024).toFixed(2)} MB)</span>
+                          <span className="name" title={f.sourceName ? `${f.sourceName} → ${f.name}` : f.name}>
+                            {label}{" "}
+                            <span className="caption">
+                              ({(f.size / 1024 / 1024).toFixed(2)} MB{f.sourceName ? ", image" : ""})
+                            </span>
                           </span>
                           {count > 0 && <span className="wo-badge">{count} area(s) hidden</span>}
                           <button
@@ -654,7 +717,7 @@ export default function Home() {
                           <button
                             className="btn-sm btn-outline"
                             disabled={processing}
-                            aria-label={`Remove ${f.name}`}
+                            aria-label={`Remove ${label}`}
                             onClick={() => {
                               const remaining = files.filter((_, j) => j !== i);
                               setFiles(remaining);
@@ -695,7 +758,7 @@ export default function Home() {
                   <button
                     className="btn btn-primary btn-block"
                     style={{ marginTop: ".5rem" }}
-                    disabled={processing || !selectedBrandings.length}
+                    disabled={processing || !!prepareLabel || !selectedBrandings.length}
                     onClick={doProcess}
                   >
                     {processing ? (
@@ -703,7 +766,7 @@ export default function Home() {
                         <span className="spinner" /> Processing…
                       </>
                     ) : (
-                      `🚀 Process ${files.length} PDF(s) × ${selectedBrandings.length} branding(s)`
+                      `🚀 Process ${files.length} file(s) × ${selectedBrandings.length} branding(s)`
                     )}
                   </button>
                 </>

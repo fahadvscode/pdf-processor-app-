@@ -1,10 +1,11 @@
 """
-POST /api/process — process one PDF for one branding.
+POST /api/process — process one PDF or image for one branding.
 
 Accepts multipart form with:
-  file: the PDF binary
+  file: the PDF or image binary (JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, AVIF, SVG, …)
   project_name, branding_name, file_type, include_footer (0|1), replace_existing (0|1)
 
+Images are wrapped in a PDF first, then white-out, watermark and footer run as usual.
 Returns JSON with drive_url, file_name, processing_time, file_size, output_path.
 """
 from http.server import BaseHTTPRequestHandler
@@ -12,11 +13,18 @@ from urllib.parse import urlparse
 import cgi
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
 import gc
 import requests
+
+# MuPDF scratch files must land on the one writable directory.
+os.environ["TMPDIR"] = "/tmp"
+os.environ["TEMP"] = "/tmp"
+os.environ["TMP"] = "/tmp"
+tempfile.tempdir = "/tmp"
 
 # Make sure the api package root is importable so the redactor can find assets
 API_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -36,11 +44,23 @@ def _process_pdf(input_path: str, output_path: str, project_folder_path: str, in
     return len(whiteouts)
 
 
-def _safe_name(name: str) -> str:
-    name = os.path.basename((name or "upload.pdf").replace("\x00", "")).strip() or "upload.pdf"
-    if not name.lower().endswith(".pdf"):
-        name += ".pdf"
-    return name
+def _output_pdf_name(name: str) -> str:
+    """Drive name. Images are stored as a PDF with the same base name."""
+    base = os.path.basename((name or "upload").replace("\x00", "")).strip() or "upload"
+    stem = os.path.splitext(base)[0].strip() or "upload"
+    return f"{stem[:180]}.pdf"
+
+
+def _as_pdf(data: bytes, name: str) -> bytes:
+    from lib.redactor import file_kind, image_bytes_to_pdf
+    kind = file_kind(data, name)
+    if kind == "pdf":
+        return data
+    if kind == "image":
+        return image_bytes_to_pdf(data)
+    raise ValueError(
+        "Upload a PDF or an image (JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, AVIF, SVG)"
+    )
 
 
 def _is_blob_url(url: str) -> bool:
@@ -54,8 +74,45 @@ def _download_blob(url: str) -> bytes:
     resp = requests.get(url, timeout=180)
     resp.raise_for_status()
     if not resp.content:
-        raise RuntimeError("Uploaded PDF was empty")
+        raise ValueError("Uploaded file was empty")
     return resp.content
+
+
+def _reclaim_tmp() -> None:
+    """Drop leftovers from an earlier run on this reused server instance."""
+    if not os.environ.get("VERCEL"):
+        return
+    root = "/tmp"
+    if not os.path.isdir(root):
+        return
+    try:
+        free = shutil.disk_usage(root).free
+    except Exception:
+        free = 0
+    aggressive = free < 200 * 1024 * 1024
+    for name in os.listdir(root):
+        leftover = name.startswith("tmp") or name.endswith(".pdf") or name.startswith("fitz")
+        if not aggressive and not leftover:
+            continue
+        path = os.path.join(root, name)
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                os.remove(path)
+        except Exception:
+            pass
+
+
+def _public_error(exc: BaseException) -> str:
+    msg = str(exc)
+    low = msg.lower()
+    if "no space left" in low or "cannot fwrite" in low or "temporary disk" in low:
+        return (
+            "This file is too large for the server's temporary disk. "
+            "Export a smaller PDF (or a lower-resolution image) and try again."
+        )
+    return msg
 
 
 def _delete_blob(url: str) -> None:
@@ -104,26 +161,35 @@ class handler(BaseHTTPRequestHandler):
             delete_blob = form.getfirst("delete_blob", "0") == "1"
 
             if blob_url:
-                pdf_bytes = _download_blob(blob_url)
-                file_name = _safe_name(form.getfirst("file_name", "") or "upload.pdf")
+                raw_bytes = _download_blob(blob_url)
+                raw_name = form.getfirst("file_name", "") or "upload"
             elif "file" in form:
                 pdf_field = form["file"]
-                pdf_bytes = pdf_field.file.read()
-                file_name = _safe_name(pdf_field.filename or "upload.pdf")
+                raw_bytes = pdf_field.file.read()
+                raw_name = pdf_field.filename or "upload"
             else:
-                self._json(400, {"error": "PDF file is required"})
+                self._json(400, {"error": "A PDF or image is required"})
                 return
+
+            if not raw_bytes:
+                raise ValueError("Uploaded file was empty")
+            pdf_bytes = _as_pdf(raw_bytes, raw_name)
+            file_name = _output_pdf_name(raw_name)
+            del raw_bytes
 
             if not all([project_name, branding_name, file_type]):
                 self._json(400, {"error": "project_name, branding_name, file_type required"})
                 return
 
-            with tempfile.TemporaryDirectory() as tmp:
-                in_path = os.path.join(tmp, file_name)
-                out_path = os.path.join(tmp, f"processed_{file_name}")
+            _reclaim_tmp()
+            with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+                in_path = os.path.join(tmp, "input.pdf")
+                out_path = os.path.join(tmp, "output.pdf")
 
                 with open(in_path, "wb") as f:
                     f.write(pdf_bytes)
+                del pdf_bytes
+                gc.collect()
 
                 whiteout_count = _process_pdf(
                     in_path,
@@ -162,9 +228,12 @@ class handler(BaseHTTPRequestHandler):
                 "whiteouts": whiteout_count,
             })
 
+        except ValueError as e:
+            gc.collect()
+            self._json(400, {"error": _public_error(e), "processing_time": round(time.time() - start, 2)})
         except Exception as e:
             gc.collect()
-            self._json(500, {"error": str(e), "processing_time": round(time.time() - start, 2)})
+            self._json(500, {"error": _public_error(e), "processing_time": round(time.time() - start, 2)})
         finally:
             if "delete_blob" in locals() and delete_blob and blob_url:
                 _delete_blob(blob_url)

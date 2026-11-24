@@ -9,13 +9,14 @@ import os
 import sys
 import gc
 import logging
+import shutil
 import time
 import requests
 from pathlib import Path
 from typing import List, Tuple, Optional
 
 import fitz  # PyMuPDF
-from PIL import Image
+from PIL import Image, ImageOps
 
 logger = logging.getLogger("redactor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -254,7 +255,7 @@ def _repair_by_raster(src: str, dst: str) -> bool:
                 logger.warning("Raster page %s failed: %s", i + 1, exc)
         if kept < 1:
             return False
-        out.save(dst, garbage=4, deflate=True)
+        out.save(dst, garbage=1, deflate=True)
         return _probe_pdf(dst)
     finally:
         out.close()
@@ -352,6 +353,61 @@ def _apply_whiteouts(doc: fitz.Document, whiteouts: List[dict]) -> int:
     return applied
 
 
+_DISK_MSG = (
+    "This file is too large for the server's temporary disk. "
+    "Export a smaller PDF (or a lower-resolution image) and try again."
+)
+
+
+def _is_disk_full(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "no space left" in msg or "cannot fwrite" in msg or "errno 28" in msg
+
+
+def _save_stamped(doc: fitz.Document, source: str, output_path: str, rewrite: bool) -> None:
+    """Append the watermark, or rewrite when content has to be removed.
+
+    A full rewrite decompresses a site plan and fills the small temporary disk
+    on the server (`cannot fwrite: No space left on device`). Incremental save
+    only writes the new watermark and footer.
+    """
+    if not rewrite:
+        try:
+            doc.saveIncr()
+        except Exception as exc:
+            if _is_disk_full(exc):
+                raise RuntimeError(_DISK_MSG) from exc
+            logger.warning("Incremental save failed (%s); rewriting the PDF", exc)
+        else:
+            if os.path.abspath(source) != os.path.abspath(output_path):
+                os.replace(source, output_path)
+            return
+    _save_rewritten(doc, source, output_path)
+
+
+def _save_rewritten(doc: fitz.Document, source: str, output_path: str) -> None:
+    src_size = os.path.getsize(source) if os.path.isfile(source) else 0
+    try:
+        free = shutil.disk_usage(os.path.dirname(output_path) or "/tmp").free
+    except Exception:
+        free = 0
+    if src_size and free and free < src_size + 48 * 1024 * 1024:
+        raise RuntimeError(_DISK_MSG)
+    partial = output_path + ".partial"
+    try:
+        doc.save(partial, garbage=1, deflate=True)
+        os.replace(partial, output_path)
+    except Exception as exc:
+        if os.path.isfile(partial):
+            try:
+                os.remove(partial)
+            except OSError:
+                pass
+        if _is_disk_full(exc):
+            raise RuntimeError(_DISK_MSG) from exc
+        raise
+
+
 def _stamp_pdf(
     source: str,
     output_path: str,
@@ -371,11 +427,151 @@ def _stamp_pdf(
                 _insert_footer(page, footer_png)
             if (page_num + 1) % 10 == 0:
                 gc.collect()
-        doc.save(output_path, garbage=4, deflate=True)
+        # White-out has to rewrite the file so the covered text is actually gone.
+        # A plain watermark is appended, which keeps a large site plan from
+        # filling the temporary disk.
+        _save_stamped(doc, source, output_path, rewrite=bool(whiteouts))
     finally:
         doc.close()
         del doc
         gc.collect()
+
+
+# ---------------------------------------------------------------------------
+# Images → one PDF, so white-out / watermark / footer stay on one path
+# ---------------------------------------------------------------------------
+MAX_IMAGE_EDGE = 4096
+MAX_IMAGE_PAGES = 100
+
+_IMAGE_EXTS = {
+    ".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".apng", ".gif", ".webp",
+    ".bmp", ".dib", ".tif", ".tiff", ".heic", ".heif", ".avif", ".svg",
+    ".ico", ".cur", ".jxl",
+}
+_HEIF_BRANDS = {b"heic", b"heix", b"heif", b"hevc", b"mif1", b"msf1", b"avif", b"avis"}
+_heif_ready = False
+
+
+def _enable_heif() -> None:
+    """Turn on HEIC/AVIF in Pillow when the optional decoder is installed."""
+    global _heif_ready
+    if _heif_ready:
+        return
+    _heif_ready = True
+    try:
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
+    except Exception:
+        logger.info("HEIC/AVIF decoder is not installed; those files are converted in the browser")
+
+
+def _looks_like_svg(data: bytes) -> bool:
+    sample = data[:4000].lstrip().lower()
+    if sample.startswith(b"<svg"):
+        return True
+    if sample.startswith((b"<?xml", b"<!doctype")) and b"<svg" in sample:
+        return True
+    return False
+
+
+def file_kind(data: bytes, name: str = "") -> str:
+    """'pdf', 'image', or 'unknown' from the file header, then the extension."""
+    if not data:
+        return "unknown"
+    if data[:5] == b"%PDF-":
+        return "pdf"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image"
+    if data[:2] == b"BM":
+        return "image"
+    if data[:4] in (b"II*\x00", b"MM\x00*"):
+        return "image"
+    if data[:4] == b"\x00\x00\x01\x00":
+        return "image"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image"
+    if len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12].lower() in _HEIF_BRANDS:
+        return "image"
+    if _looks_like_svg(data):
+        return "image"
+    ext = os.path.splitext(name or "")[1].lower()
+    if ext in _IMAGE_EXTS:
+        return "image"
+    return "unknown"
+
+
+def _flatten_image(im: Image.Image) -> Image.Image:
+    """Apply the camera orientation and paint any transparency onto white."""
+    im = ImageOps.exif_transpose(im)
+    if im.mode == "RGB":
+        return im
+    rgba = im.convert("RGBA")
+    bg = Image.new("RGB", rgba.size, (255, 255, 255))
+    bg.paste(rgba, mask=rgba.getchannel("A"))
+    return bg
+
+
+def image_bytes_to_pdf(data: bytes) -> bytes:
+    """Wrap an image in a PDF page per frame. The picture fills each page.
+
+    White-out boxes are fractions of the page, so they land on the same place
+    the browser showed. TIFF keeps every page; everything else uses the first
+    frame, which is the frame the browser previews.
+    """
+    if not data:
+        raise ValueError("Image was empty")
+    _enable_heif()
+
+    if _looks_like_svg(data):
+        try:
+            import cairosvg
+            data = cairosvg.svg2png(bytestring=data, output_width=MAX_IMAGE_EDGE)
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(f"Could not read this SVG ({exc})") from exc
+
+    try:
+        im = Image.open(io.BytesIO(data))
+        im.load()
+    except Exception as exc:
+        raise ValueError(
+            "Could not read this image. JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, AVIF and SVG work."
+        ) from exc
+
+    is_tiff = (im.format or "").upper() == "TIFF"
+    try:
+        count = im.n_frames if is_tiff else 1
+    except Exception:
+        count = 1
+    if count > MAX_IMAGE_PAGES:
+        im.close()
+        raise ValueError(f"This image has too many pages (limit is {MAX_IMAGE_PAGES})")
+
+    doc = fitz.open()
+    try:
+        for index in range(count):
+            im.seek(index)
+            flat = _flatten_image(im.copy())
+            if max(flat.size) > MAX_IMAGE_EDGE:
+                flat.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
+            if flat.width < 1 or flat.height < 1:
+                raise ValueError(f"Image page {index + 1} has no size")
+            buf = io.BytesIO()
+            flat.save(buf, format="JPEG", quality=92, optimize=True)
+            page = doc.new_page(width=flat.width, height=flat.height)
+            page.insert_image(page.rect, stream=buf.getvalue())
+        if doc.page_count < 1:
+            raise ValueError("Image had no pages")
+        logger.info("Converted image to a %s-page PDF", doc.page_count)
+        return doc.tobytes(deflate=True, garbage=4)
+    finally:
+        doc.close()
+        im.close()
 
 
 # ---------------------------------------------------------------------------
