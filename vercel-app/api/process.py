@@ -20,12 +20,6 @@ import time
 import gc
 import requests
 
-# MuPDF scratch files must land on the one writable directory.
-os.environ["TMPDIR"] = "/tmp"
-os.environ["TEMP"] = "/tmp"
-os.environ["TMP"] = "/tmp"
-tempfile.tempdir = "/tmp"
-
 # Make sure the api package root is importable so the redactor can find assets
 API_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(os.path.dirname(API_DIR), "assets")
@@ -78,30 +72,16 @@ def _download_blob(url: str) -> bytes:
     return resp.content
 
 
+WORK_ROOT = "/tmp/pdf-work"
+
+
 def _reclaim_tmp() -> None:
-    """Drop leftovers from an earlier run on this reused server instance."""
-    if not os.environ.get("VERCEL"):
-        return
-    root = "/tmp"
-    if not os.path.isdir(root):
-        return
-    try:
-        free = shutil.disk_usage(root).free
-    except Exception:
-        free = 0
-    aggressive = free < 200 * 1024 * 1024
-    for name in os.listdir(root):
-        leftover = name.startswith("tmp") or name.endswith(".pdf") or name.startswith("fitz")
-        if not aggressive and not leftover:
-            continue
-        path = os.path.join(root, name)
-        try:
-            if os.path.isdir(path):
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                os.remove(path)
-        except Exception:
-            pass
+    """Drop our own leftovers from an earlier run on this reused instance.
+
+    Only WORK_ROOT is touched: Vercel keeps the Python packages in /tmp/_vc_deps.
+    """
+    shutil.rmtree(WORK_ROOT, ignore_errors=True)
+    os.makedirs(WORK_ROOT, exist_ok=True)
 
 
 def _public_error(exc: BaseException) -> str:
@@ -182,7 +162,7 @@ class handler(BaseHTTPRequestHandler):
                 return
 
             _reclaim_tmp()
-            with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            with tempfile.TemporaryDirectory(dir=WORK_ROOT) as tmp:
                 in_path = os.path.join(tmp, "input.pdf")
                 out_path = os.path.join(tmp, "output.pdf")
 
